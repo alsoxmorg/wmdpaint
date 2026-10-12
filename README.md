@@ -17,6 +17,10 @@ runtime configuration files.
 - Layer thumbnails, renaming, duplication, reordering, merging, and floating selections
 - Brush, eraser, flood fill, selection, text, shapes, eyedropper, clone stamp,
   airbrush, move, resize, crop, rotate, and canvas scaling tools
+- On-canvas layer resize handles with an aspect-ratio toggle and numeric sizing
+- Nearest / Smooth sampling for layer and canvas scaling, up to 65,535 pixels per dimension
+- Painting constrained to the selection mask, including clone, fill, and shapes
+- Built-in brush sizes up to 1,024 pixels, with slider and numeric sizing
 - Custom image-based brushes
 - Zoom, pan, pixel grid, fullscreen, and read-only viewer mode
 - Undo and redo snapshots for painting, transforms, layer operations, and layer properties
@@ -76,14 +80,31 @@ make
 The result is `./wmdpaint`. Vendored headers and generated asset headers are
 already present; there is no fetch step.
 
-Run the archive regression test and compile the supported configuration
-variants with:
+Run the format, archive, rendering, stroke, resize, and document tests and compile
+the supported configuration variants with:
 
 ```sh
 make test
 make check-config
 make ui-test
 ```
+
+The regression tests include scalar blend comparisons and headless SDL checks
+that batched strokes preserve pixels and monochrome dithering. Layer-resize
+checks cover aspect ratios, anchors, undo/redo, cancellation, and canvas
+expansion. Format tests check exact wire bytes, truncation, invalid dimensions,
+and write errors; document tests cover crop, canvas sizing, offsets, and layer
+history. No display is needed for `make test`.
+
+Measure the compositor, RGBA8 conversion, and software texture uploads with:
+
+```sh
+make bench
+./tests/bench_canvas mixed
+```
+
+The benchmark uses only C99 and existing SDL timing APIs. See
+[PERFORMANCE.md](doc/PERFORMANCE.md) for scenarios, results, and limitations.
 
 `check-config` covers both confirmation prompts enabled and the build with the
 text tool disabled. `ui-test` launches the application under Xvfb and checks
@@ -126,8 +147,7 @@ By default, New, Open, and Exit do not ask for confirmation. Set
 discarding unsaved work. Failed saves and exports always leave the document
 marked modified and display an error instead of claiming success.
 
-The manual page source is [wmdpaint.1](wmdpaint.1). The full development
-notes and interface reference remain in the repository's `doc/` directory.
+The manual page source is [wmdpaint.1](wmdpaint.1). See the [user reference](doc/wmdpaint.md) and [development guide](doc/HACKING.txt).
 
 ## Configuration
 

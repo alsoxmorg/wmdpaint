@@ -63,6 +63,8 @@ layer_flatten_rect(const Layer *l, FFImage *dst,
 {
 	int x, y, x0, y0, x1, y1, dx, dy;
 
+	if (l->opacity == 0.0f) return;
+
 	if (cx0 < 0) cx0 = 0;
 	if (cy0 < 0) cy0 = 0;
 	if (cx1 > (int)dst->w) cx1 = (int)dst->w;
@@ -81,6 +83,28 @@ layer_flatten_rect(const Layer *l, FFImage *dst,
 	if (x1 > (int)l->w) x1 = (int)l->w;
 	if (y1 > (int)l->h) y1 = (int)l->h;
 	if (x0 >= x1 || y0 >= y1) return;
+
+	/* Common paint layers: specialize once per layer, keeping extra branches
+	 * out of the general translucent/non-Normal blend loop. */
+	if (l->blend_mode == LAYER_BLEND_NORMAL && l->opacity == 1.0f) {
+		for (y = y0; y < y1; y++) {
+			const uint16_t *s = l->px + ((size_t)y * l->w + x0) * 4;
+			uint16_t *d = dst->px + ((size_t)(l->y+y) * dst->w + (size_t)(l->x+x0)) * 4;
+			for (x = x0; x < x1; x++, s += 4, d += 4) {
+				uint32_t sa = s[3], na = 65535u-sa;
+				if (sa == 0) continue;
+				if (sa == 65535u) {
+					memcpy(d, s, 4 * sizeof(uint16_t));
+					continue;
+				}
+				d[0] = (uint16_t)((sa*s[0] + na*d[0]) / 65535u);
+				d[1] = (uint16_t)((sa*s[1] + na*d[1]) / 65535u);
+				d[2] = (uint16_t)((sa*s[2] + na*d[2]) / 65535u);
+				d[3] = (uint16_t)(sa + na*d[3] / 65535u);
+			}
+		}
+		return;
+	}
 
 	for (y = y0; y < y1; y++) {
 		dy = l->y + y;

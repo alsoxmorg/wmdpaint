@@ -15,7 +15,7 @@ CFLAGS  = -std=c99 -Wall -Wextra -O2 -Isrc $(SDL_CFLAGS) $(CONFIG_CFLAGS)
 LDFLAGS = $(SDL_LIBS) -lm
 
 PAINT_DEPS  = src/config_paint.h src/create.h src/filebrowser.h src/farbfeld.h \
-              src/1fpirate.h src/layer.h src/icons_data.h src/logo_data.h \
+              src/1fpirate.h src/layer.h src/canvas_render.h src/icons_data.h src/logo_data.h \
               src/stb_image_write.h src/stb_truetype.h src/wmdarchive.h \
               src/bitmap_font_data.h
 
@@ -47,13 +47,18 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(BIN) tests/test_wmdarchive
+	rm -f $(BIN) tests/test_wmdarchive tests/bench_canvas tests/test_canvas_render tests/test_paint_stroke tests/test_layer_resize tests/test_image_formats tests/test_document_ops
 
 tests/test_wmdarchive: tests/test_wmdarchive.c src/config_paint.h src/layer.h src/wmdarchive.h
 	$(CC) -std=c99 -Wall -Wextra -Wno-unused-function -O2 -Isrc -o $@ $<
 
-test: tests/test_wmdarchive
+test: tests/test_wmdarchive tests/test_canvas_render tests/test_paint_stroke tests/test_layer_resize tests/test_image_formats tests/test_document_ops
 	./tests/test_wmdarchive
+	./tests/test_canvas_render
+	./tests/test_paint_stroke
+	./tests/test_layer_resize
+	./tests/test_image_formats
+	./tests/test_document_ops
 
 check-config:
 	$(MAKE) clean
@@ -66,3 +71,28 @@ ui-test: all
 	./tests/ui_smoke.sh
 
 .PHONY: all vulkan novulkan opengl clean install uninstall test check-config ui-test
+
+tests/bench_canvas: tests/bench_canvas.c src/canvas_render.h src/layer.h src/farbfeld.h src/sdl_wmd.h src/config.h
+	$(CC) $(CFLAGS) -Wno-unused-function -o $@ $< $(LDFLAGS)
+
+bench: tests/bench_canvas
+	./tests/bench_canvas
+
+.PHONY: bench
+
+tests/test_canvas_render: tests/test_canvas_render.c src/canvas_render.h src/layer.h src/farbfeld.h
+	$(CC) -std=c99 -Wall -Wextra -Wno-unused-function -O2 -Isrc -o $@ $<
+
+# Include the application to verify real callbacks without opening a window.
+# -O0 keeps this integration check quick; timings live in the -O2 benchmark.
+tests/test_paint_stroke: tests/test_paint_stroke.c src/wmdpaint.c $(PAINT_DEPS) src/config.h src/sdl_wmd.h src/stb_image.h src/nuklear.h src/$(NK_RENDERER)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -o $@ $< $(LDFLAGS)
+
+tests/test_layer_resize: tests/test_layer_resize.c src/wmdpaint.c $(PAINT_DEPS) src/config.h src/sdl_wmd.h src/stb_image.h src/nuklear.h src/$(NK_RENDERER)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -o $@ $< $(LDFLAGS)
+
+tests/test_image_formats: tests/test_image_formats.c src/farbfeld.h src/1fpirate.h
+	$(CC) -std=c99 -Wall -Wextra -Wno-unused-function -O2 -Isrc -o $@ $<
+
+tests/test_document_ops: tests/test_document_ops.c src/wmdpaint.c $(PAINT_DEPS) src/config.h src/sdl_wmd.h src/stb_image.h src/nuklear.h src/$(NK_RENDERER)
+	$(CC) $(CFLAGS) -O0 -Wno-unused-function -o $@ $< $(LDFLAGS)

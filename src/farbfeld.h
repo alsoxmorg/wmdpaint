@@ -10,6 +10,7 @@
 
 #include <arpa/inet.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,10 +20,20 @@ typedef struct {
 	uint16_t *px; /* RGBA, 4 channels per pixel, native endian */
 } FFImage;
 
+/* Rendering coordinates are signed; also reject byte-count overflow. */
+static int
+ff_dimensions_valid(uint32_t w, uint32_t h)
+{
+	return w && h && w <= INT_MAX && h <= INT_MAX &&
+	       (size_t)w <= SIZE_MAX / h / 4 / sizeof(uint16_t);
+}
+
 static FFImage *
 ff_new(uint32_t w, uint32_t h)
 {
-	FFImage *img = malloc(sizeof *img);
+	FFImage *img;
+	if (!ff_dimensions_valid(w, h)) return NULL;
+	img = malloc(sizeof *img);
 	if (!img) return NULL;
 	img->w = w;
 	img->h = h;
@@ -88,11 +99,12 @@ ff_save_fp(FILE *f, const FFImage *img)
 	uint16_t *buf;
 	int ok;
 
+	if (!img || !img->px || !ff_dimensions_valid(img->w, img->h)) return -1;
 	w = htonl(img->w);
 	h = htonl(img->h);
-	fwrite("farbfeld", 1, 8, f);
-	fwrite(&w, 4, 1, f);
-	fwrite(&h, 4, 1, f);
+	if (fwrite("farbfeld", 1, 8, f) != 8 ||
+	    fwrite(&w, 4, 1, f) != 1 || fwrite(&h, 4, 1, f) != 1)
+		return -1;
 
 	npx = (size_t)img->w * img->h * 4;
 	buf = malloc(npx * sizeof(uint16_t));
@@ -114,7 +126,7 @@ ff_save(const char *path, const FFImage *img)
 	f = fopen(path, "wb");
 	if (!f) return -1;
 	ok = ff_save_fp(f, img);
-	fclose(f);
+	if (fclose(f) != 0) ok = -1;
 	return ok;
 }
 
