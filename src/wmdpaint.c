@@ -540,6 +540,36 @@ static uint16_t      brush_a      = 0xffff;
 /* mirror as nk_colorf for the brush popup UI (0.0–1.0 floats) */
 static struct nk_colorf brush_colorf = {0.0f, 0.0f, 0.0f, 1.0f};
 static int           brush_popup_open = 0;
+static struct nk_rect brush_swatch_bounds;
+#define RECENT_COLOR_COUNT 5
+typedef struct { uint16_t r, g, b, a; } PaintColor;
+static PaintColor recent_colors[RECENT_COLOR_COUNT];
+static int recent_color_count;
+
+static void
+brush_color_set(PaintColor c)
+{
+  brush_r = c.r; brush_g = c.g; brush_b = c.b; brush_a = c.a;
+  brush_colorf.r = c.r / 65535.0f; brush_colorf.g = c.g / 65535.0f;
+  brush_colorf.b = c.b / 65535.0f; brush_colorf.a = c.a / 65535.0f;
+}
+
+static void
+brush_color_remember(void)
+{
+  PaintColor c = {brush_r, brush_g, brush_b, brush_a};
+  int i;
+  /* Opaque black and white have permanent slots. */
+  if (c.a == 65535 && ((c.r == 0 && c.g == 0 && c.b == 0) ||
+      (c.r == 65535 && c.g == 65535 && c.b == 65535))) return;
+  for (i = 0; i < recent_color_count; i++)
+    if (recent_colors[i].r == c.r && recent_colors[i].g == c.g &&
+        recent_colors[i].b == c.b && recent_colors[i].a == c.a) break;
+  if (i == RECENT_COLOR_COUNT) i--;
+  else if (i == recent_color_count) recent_color_count++;
+  for (; i > 0; i--) recent_colors[i] = recent_colors[i-1];
+  recent_colors[0] = c;
+}
 
 /* ---- custom brush/stamp system ----------------------------------------- */
 #define MAX_BRUSH_DEFS  64
@@ -963,7 +993,7 @@ sel_overlay_rebuild(void)
   buf = malloc(n * 4);
   if (!buf) return;
   for (i = 0; i < n; i++) {
-    if (m[i]) { buf[i*4+0]=40; buf[i*4+1]=130; buf[i*4+2]=255; buf[i*4+3]=80; }
+    if (m[i]) { buf[i*4+0]=buf[i*4+1]=buf[i*4+2]=255; buf[i*4+3]=80; }
     else      { buf[i*4+0]=buf[i*4+1]=buf[i*4+2]=buf[i*4+3]=0; }
   }
   sel_tex = SDL_CreateTexture(sdl_ren, SDL_PIXELFORMAT_RGBA32,
@@ -1403,6 +1433,7 @@ fill_selection(void)
   int x, y;
   Layer *al;
   if (!sel_active || !canvas || nlayers == 0 || sel_w <= 0 || sel_h <= 0) return;
+  brush_color_remember();
   m = sel_mask_get();
   snapshot_pixels();
   al = layers[active_layer];
@@ -6082,6 +6113,17 @@ main(int argc, char *argv[])
 	win_w = WMD_RESIZE_W(evt);
 	win_h = WMD_RESIZE_H(evt);
       }
+      /* Handle dismissal before popup focus or the text tool consumes input. */
+      if (brush_popup_open &&
+          ((evt.type == SDL_KEYDOWN && WMD_KEYSYM(evt) == SDLK_ESCAPE) ||
+           (evt.type == SDL_MOUSEBUTTONDOWN && evt.button.button == SDL_BUTTON_LEFT &&
+            evt.button.x >= brush_swatch_bounds.x &&
+            evt.button.x < brush_swatch_bounds.x + brush_swatch_bounds.w &&
+            evt.button.y >= brush_swatch_bounds.y &&
+            evt.button.y < brush_swatch_bounds.y + brush_swatch_bounds.h))) {
+        brush_popup_open = 0;
+        continue;
+      }
 #if !NOTTF
       /* text tool keyboard capture — consume events before Nuklear sees them */
       if (text_active) {
@@ -6374,11 +6416,12 @@ main(int argc, char *argv[])
 	  struct nk_color swatch = nk_rgba_f(
 					     brush_colorf.r, brush_colorf.g,
 					     brush_colorf.b, brush_colorf.a);
+	  brush_swatch_bounds = b;
 	  if (nk_button_color(ctx, swatch)) {
 	    active_tool      = TOOL_BRUSH;
-	    brush_popup_open = 1;
+	    brush_popup_open = !brush_popup_open;
 	  }
-	  do_tooltip(ctx, b, "Brush colour — click to open colour picker");
+	  do_tooltip(ctx, b, "Brush colour — click to toggle colour picker (Esc closes)");
 	}
 
 	/* cursor position in image coords */
@@ -6420,39 +6463,66 @@ main(int argc, char *argv[])
     ui_layer_panel(ctx);
 
     /* --- status bar (bottom) --- */
+    nk_style_push_vec2(ctx, &ctx->style.window.padding, nk_vec2(2, 1));
+    nk_style_push_vec2(ctx, &ctx->style.window.spacing, nk_vec2(2, 0));
+    nk_style_push_vec2(ctx, &ctx->style.button.padding, nk_vec2(0, 0));
     if (nk_begin(ctx, "statusbar",
                  nk_rect(0, (float)(win_h - STATUS_H), (float)win_w, STATUS_H),
                  NK_WINDOW_NO_SCROLLBAR)) {
       char sb[128];
-      /* 4 info columns + narrow lock toggle on the right */
-      nk_layout_row_begin(ctx, NK_DYNAMIC, STATUS_H - 2, 5);
-      nk_layout_row_push(ctx, 0.22f);
+      int i;
+      float side = STATUS_H - 2;
+      float info_width = nk_window_get_content_region_size(ctx).x - 7 * side - 22;
+      if (info_width < 0) info_width = 0;
+      /* Seven square swatches share the existing single-row bar. */
+      nk_layout_row_begin(ctx, NK_STATIC, side, 12);
+      for (i = 0; i < 7; i++) {
+        PaintColor c = {0, 0, 0, 65535};
+        struct nk_rect b;
+        nk_layout_row_push(ctx, side);
+        b = nk_widget_bounds(ctx);
+        if (i == 1) c.r = c.g = c.b = 65535;
+        else if (i >= 2 && i - 2 < recent_color_count) c = recent_colors[i - 2];
+        if (i < 2 || i - 2 < recent_color_count) {
+          if (nk_button_color(ctx, nk_rgba(c.r >> 8, c.g >> 8, c.b >> 8, c.a >> 8)))
+            brush_color_set(c);
+          do_tooltip(ctx, b, i == 0 ? "Black" : i == 1 ? "White" : "Recently used colour");
+        } else {
+          nk_spacing(ctx, 1);
+          nk_stroke_rect(nk_window_get_canvas(ctx), b, 0, 1, nk_rgb(90, 90, 90));
+          do_tooltip(ctx, b, "Recent colour — paint to fill this slot");
+        }
+      }
+      nk_layout_row_push(ctx, info_width * 0.22f);
       if (canvas)
         snprintf(sb, sizeof sb, " %d, %d", mouse_img_x, mouse_img_y);
       else
         snprintf(sb, sizeof sb, " --");
       nk_label(ctx, sb, NK_TEXT_LEFT);
-      nk_layout_row_push(ctx, 0.26f);
+      nk_layout_row_push(ctx, info_width * 0.26f);
       if (canvas)
         snprintf(sb, sizeof sb, "%d \xc3\x97 %d", (int)canvas->w, (int)canvas->h);
       else
         snprintf(sb, sizeof sb, "--");
       nk_label(ctx, sb, NK_TEXT_CENTERED);
-      nk_layout_row_push(ctx, 0.22f);
+      nk_layout_row_push(ctx, info_width * 0.22f);
       snprintf(sb, sizeof sb, "%.0f%%", canvas_zoom * 100.0f);
       nk_label(ctx, sb, NK_TEXT_CENTERED);
-      nk_layout_row_push(ctx, 0.22f);
+      nk_layout_row_push(ctx, info_width * 0.22f);
       if (nlayers > 0)
         snprintf(sb, sizeof sb, "%s ", layers[active_layer]->name);
       else
         snprintf(sb, sizeof sb, "--");
       nk_label(ctx, sb, NK_TEXT_RIGHT);
-      nk_layout_row_push(ctx, 0.08f);
+      nk_layout_row_push(ctx, info_width * 0.08f);
       canvas_locked = nk_select_label(ctx, canvas_locked ? "LK" : "  ",
                                       NK_TEXT_CENTERED, canvas_locked);
       nk_layout_row_end(ctx);
     }
     nk_end(ctx);
+    nk_style_pop_vec2(ctx);
+    nk_style_pop_vec2(ctx);
+    nk_style_pop_vec2(ctx);
 
     /* compute canvas display rect (zoom + centre within canvas panel) */
 #if TOOL_ON_TOP
@@ -6670,6 +6740,8 @@ main(int argc, char *argv[])
 	/* snapshot active layer at the start of each undoable stroke */
 	if (lmb_canvas_press && in_canvas && nlayers > 0) {
 	  int t = active_tool;
+	  if (t == TOOL_BRUSH || t == TOOL_AIRBRUSH || t == TOOL_FILL ||
+	      t == TOOL_LINE || t == TOOL_TEXT) brush_color_remember();
 	  if ((t == TOOL_BRUSH || t == TOOL_ERASER || t == TOOL_AIRBRUSH ||
 	       t == TOOL_DECOLOR ||
 	       t == TOOL_FILL  || t == TOOL_LINE   || t == TOOL_MOVE    ||
@@ -7008,12 +7080,19 @@ main(int argc, char *argv[])
     }
 
     /* selection overlay — above canvas, below UI panels */
-    if (active_tool == TOOL_SELECT && canvas && (sel_dragging || sel_active)) {
+    if (canvas && (sel_active || (active_tool == TOOL_SELECT && sel_dragging))) {
+      int editing_selection = active_tool == TOOL_SELECT;
       int rx, ry, rw, rh;
       SDL_Rect sr;
       /* finalised non-rectangular shapes: tint the actual selected pixels */
       if (!sel_dragging && sel_active && sel_tex) {
 	SDL_Rect dst = { img_x, img_y, img_dw, img_dh };
+	/* Keep the mask visible while painting, with a subtler neutral tint. */
+	SDL_SetTextureColorMod(sel_tex,
+	                       editing_selection ? 40 : 180,
+	                       editing_selection ? 130 : 180,
+	                       editing_selection ? 255 : 180);
+	SDL_SetTextureAlphaMod(sel_tex, editing_selection ? 255 : 80);
 	WMD_RenderCopy(sdl_ren, sel_tex, NULL, &dst);
       }
       if (sel_dragging) {
@@ -7028,7 +7107,10 @@ main(int argc, char *argv[])
       sr.y = img_y + ry * img_dh / (int)canvas->h;
       sr.w = rw * img_dw / (int)canvas->w;
       sr.h = rh * img_dh / (int)canvas->h;
-      SDL_SetRenderDrawColor(sdl_ren, 255, 255, 255, 255);
+      /* Yellow marks a retained painting constraint when another tool is active. */
+      SDL_SetRenderDrawColor(sdl_ren, editing_selection ? 255 : 210,
+                             editing_selection ? 255 : 185,
+                             editing_selection ? 255 : 80, 255);
       WMD_RenderDrawRect(sdl_ren, &sr);
       if (sr.w > 2 && sr.h > 2) {
 	sr.x++; sr.y++; sr.w -= 2; sr.h -= 2;

@@ -22,6 +22,33 @@ counted_upload(SDL_Texture *texture, const SDL_Rect *rect, const void *pixels, i
 
 /* Original per-stamp rendering, used as the output reference. */
 static void
+test_recent_colors(void)
+{
+  int i;
+  PaintColor c = {0, 0, 0, 65535};
+  recent_color_count = 0;
+  brush_color_set(c); brush_color_remember();
+  c.r = c.g = c.b = 65535;
+  brush_color_set(c); brush_color_remember();
+  assert(recent_color_count == 0);
+  for (i = 1; i <= 6; i++) {
+    c.r = (uint16_t)i; c.g = 1234; c.b = 5678; c.a = 32768;
+    brush_color_set(c); brush_color_remember();
+  }
+  assert(recent_color_count == 5);
+  assert(recent_colors[0].r == 6 && recent_colors[4].r == 2);
+  c = recent_colors[3];
+  brush_color_set(c); brush_color_remember();
+  assert(recent_color_count == 5 && recent_colors[0].r == 3);
+  assert(recent_colors[1].r == 6 && recent_colors[4].r == 2);
+  assert(brush_r == 3 && brush_g == 1234 && brush_b == 5678 && brush_a == 32768);
+  assert(fabsf(brush_colorf.a - 32768 / 65535.0f) < 0.00001f);
+  recent_color_count = 0;
+  c.r = c.g = c.b = 0; c.a = 65535;
+  brush_color_set(c);
+}
+
+static void
 reference_stroke(int x0, int y0, int x1, int y1, void (*paint)(int, int))
 {
   int dx = abs(x1-x0), dy = abs(y1-y0);
@@ -194,6 +221,7 @@ main(void)
   }
   layers[0]->alpha_lock = 0;
   test_selection_painting();
+  test_recent_colors();
   pirate_mode = 0; area_copypasta_source_set = 0;
   uploads = 0;
   paint_stroke(1, 1, 8, 8, area_copypasta_paint);
