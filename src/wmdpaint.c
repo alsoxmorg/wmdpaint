@@ -90,6 +90,8 @@ static struct nk_context *wmd_nk_ctx;
 #endif
 #include "farbfeld.h"
 #include "1fpirate.h"
+static void busy_checkpoint(void);
+#define WMD_WORK_CHECKPOINT() busy_checkpoint()
 #include "canvas_render.h"
 #include "wmdarchive.h"
 
@@ -116,6 +118,7 @@ static void area_copypasta_clear(void);
 /* current window size — updated on every SDL_WINDOWEVENT_RESIZED */
 static int win_w = WIN_W;
 static int win_h = WIN_H;
+#include "busy.h"
 
 static FFImage *canvas;
 static char     filepath[4096];
@@ -465,6 +468,8 @@ static int   text_cx        = 0;     /* canvas-space placement origin */
 static int   text_cy        = 0;
 static int   text_size      = 36;    /* pixel height */
 static int   text_font_sel  = 0;     /* index into font_names[] */
+static struct nk_scroll text_font_scroll;
+static int text_font_reveal = 1;
 
 static char font_paths[MAX_FONTS][4096];
 static char font_names[MAX_FONTS][256];
@@ -477,6 +482,8 @@ static stbtt_fontinfo ttf_info;
 static int            ttf_loaded = 0;
 static int            ttf_which  = -1; /* font_sel that's currently loaded */
 static int            bitmap_font_loaded = 0;
+static SDL_Texture   *text_preview_tex;
+static int text_preview_font = -1, text_preview_size, text_preview_w, text_preview_h;
 #endif /* !NOTTF */
 
 /* shape tool state (TOOL_LINE multitool: line / rect / circle) */
@@ -744,6 +751,7 @@ icons_load(void)
   if (!buf) { ff_free(img); return; }
 
   for (i = 0; i < n; i++) {
+    if ((i & 65535) == 0) busy_checkpoint();
     if (img->px[i*4+0] == 0xffff) {
       /* white = background → transparent */
       buf[i*4+0] = 255; buf[i*4+1] = 255;
@@ -964,6 +972,7 @@ sel_blit(void)
   SDL_LockSurface(sel_surface);
   px = (unsigned char *)sel_surface->pixels;
   for (y = 0; y < sel_h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = 0; x < sel_w; x++) {
       size_t ci = (size_t)(sel_y + y) * canvas->w + (sel_x + x);
       size_t si = ci * 4;
@@ -993,6 +1002,7 @@ sel_overlay_rebuild(void)
   buf = malloc(n * 4);
   if (!buf) return;
   for (i = 0; i < n; i++) {
+    if ((i & 65535) == 0) busy_checkpoint();
     if (m[i]) { buf[i*4+0]=buf[i*4+1]=buf[i*4+2]=255; buf[i*4+3]=80; }
     else      { buf[i*4+0]=buf[i*4+1]=buf[i*4+2]=buf[i*4+3]=0; }
   }
@@ -1016,6 +1026,7 @@ sel_bbox_from_mask(void)
   if (!m) { sel_active = 0; sel_w = sel_h = 0; sel_overlay_rebuild(); return; }
   minx = (int)canvas->w; miny = (int)canvas->h; maxx = -1; maxy = -1;
   for (y = 0; y < (int)canvas->h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = 0; x < (int)canvas->w; x++) {
       if (!m[(size_t)y * canvas->w + x]) continue;
       if (x < minx) minx = x;
@@ -1072,6 +1083,7 @@ sel_make_ellipse(int rx, int ry, int rw, int rh)
   cx = rx + rw / 2.0; cy = ry + rh / 2.0;
   ax = rw / 2.0;      ay = rh / 2.0;
   for (y = 0; y < (int)canvas->h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = 0; x < (int)canvas->w; x++) {
       double nx = (x + 0.5 - cx) / ax;
       double ny = (y + 0.5 - cy) / ay;
@@ -1145,6 +1157,7 @@ sel_make_wand(int px, int py, int tol)
   m[(size_t)py * w + px] = 1;      /* mask doubles as the visited set */
   queue[tail++] = py * w + px;
   while (head < tail) {
+    if ((head & 4095) == 0) busy_checkpoint();
     int idx = queue[head++];
     int cx = idx % w, cy = idx / w;
     for (d = 0; d < 4; d++) {
@@ -1196,6 +1209,7 @@ sel_move_by(int dx, int dy)
   copy = calloc(n, 1);
   if (!copy) return;
   for (y = 0; y < (int)canvas->h; y++) for (x = 0; x < (int)canvas->w; x++) {
+    if (x == 0 && (y & 63) == 0) busy_checkpoint();
     int nx = x + dx, ny = y + dy;
     if (m[(size_t)y * canvas->w + x] && nx >= 0 && ny >= 0 &&
         nx < (int)canvas->w && ny < (int)canvas->h)
@@ -1351,6 +1365,7 @@ copy_selection(void)
   clipboard->x = sel_x;
   clipboard->y = sel_y;
   for (y = 0; y < sel_h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     int cy = sel_y + y;
     if (cy < 0 || cy >= (int)canvas->h) continue;
     for (x = 0; x < sel_w; x++) {
@@ -1380,6 +1395,7 @@ cut_selection(void)
   al = layers[active_layer];
   copy_selection();
   for (y = 0; y < sel_h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     int cy = sel_y + y;
     int ly = cy - al->y;
     if (ly < 0 || ly >= (int)al->h) continue;
@@ -1409,6 +1425,7 @@ delete_selection(void)
   snapshot_pixels();
   al = layers[active_layer];
   for (y = 0; y < sel_h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     int cy = sel_y + y;
     int ly = cy - al->y;
     if (ly < 0 || ly >= (int)al->h) continue;
@@ -1438,6 +1455,7 @@ fill_selection(void)
   snapshot_pixels();
   al = layers[active_layer];
   for (y = 0; y < sel_h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     int cy = sel_y + y;
     int ly = cy - al->y;
     if (ly < 0 || ly >= (int)al->h) continue;
@@ -1464,6 +1482,7 @@ layer_flip_h(void)
   snapshot_pixels();
   l = layers[active_layer];
   for (y = 0; y < (int)l->h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = 0; x < (int)l->w / 2; x++) {
       int x2 = (int)l->w - 1 - x;
       size_t a = ((size_t)y * l->w + x)  * 4;
@@ -1488,6 +1507,7 @@ layer_flip_v(void)
   snapshot_pixels();
   l = layers[active_layer];
   for (y = 0; y < (int)l->h / 2; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     int y2 = (int)l->h - 1 - y;
     for (x = 0; x < (int)l->w; x++) {
       size_t a = ((size_t)y  * l->w + x) * 4;
@@ -1517,6 +1537,7 @@ layer_rotate_cw(void)
   npx = malloc((size_t)nw * nh * 4 * sizeof(uint16_t));
   if (!npx) return;
   for (dy = 0; dy < (int)nh; dy++) {
+    if ((dy & 63) == 0) busy_checkpoint();
     for (dx = 0; dx < (int)nw; dx++) {
       size_t si = ((size_t)((int)l->h - 1 - dx) * l->w + dy) * 4;
       size_t di = ((size_t)dy * nw + dx) * 4;
@@ -1542,6 +1563,7 @@ layer_rotate_ccw(void)
   npx = malloc((size_t)nw * nh * 4 * sizeof(uint16_t));
   if (!npx) return;
   for (dy = 0; dy < (int)nh; dy++) {
+    if ((dy & 63) == 0) busy_checkpoint();
     for (dx = 0; dx < (int)nw; dx++) {
       size_t si = ((size_t)dx * l->w + (int)l->w - 1 - dy) * 4;
       size_t di = ((size_t)dy * nw + dx) * 4;
@@ -1573,6 +1595,7 @@ layer_rotate_free_apply(Layer *l,
   float cx_dst = (float)nw * 0.5f, cy_dst = (float)nh * 0.5f;
   int dx, dy;
   for (dy = 0; dy < (int)nh; dy++) {
+    if ((dy & 63) == 0) busy_checkpoint();
     for (dx = 0; dx < (int)nw; dx++) {
       float fx = (float)dx - cx_dst, fy = (float)dy - cy_dst;
       /* inverse rotation to find source pixel */
@@ -1701,6 +1724,7 @@ layer_perspective_apply(Layer *l)
   npx = calloc((size_t)nw * nh * 4, sizeof(uint16_t));
   if (!npx) return 0;
   for (dy = 0; dy < (int)nh; dy++) for (dx = 0; dx < (int)nw; dx++) {
+    if (dx == 0 && (dy & 63) == 0) busy_checkpoint();
     double x = bx + dx + 0.5, y = by + dy + 0.5;
     double den = h[6]*x + h[7]*y + 1.0;
     double sx, sy;
@@ -1797,6 +1821,7 @@ float_selection(void)
   snprintf(floating->name, sizeof floating->name, "Floating Selection");
   snapshot_canvas();
   for (y = 0; y < sel_h; y++) for (x = 0; x < sel_w; x++) {
+    if (x == 0 && (y & 63) == 0) busy_checkpoint();
     int cx = sel_x + x, cy = sel_y + y;
     int lx = cx - src->x, ly = cy - src->y;
     size_t di = ((size_t)y * sel_w + x) * 4;
@@ -1878,7 +1903,7 @@ ur_capture_layer_pixels(UndoRecord *r, int idx)
   n  = (size_t)al->w * al->h * 4;
   r->up_px = malloc(n * sizeof(uint16_t));
   if (!r->up_px) return;
-  memcpy(r->up_px, al->px, n * sizeof(uint16_t));
+  busy_copy(r->up_px, al->px, n * sizeof(uint16_t));
   r->up_w = al->w; r->up_h = al->h;
   r->up_idx = idx;
   r->up_x = al->x; r->up_y = al->y;
@@ -1933,7 +1958,7 @@ ur_capture_canvas(UndoRecord *r)
     size_t n = (size_t)layers[i]->w * layers[i]->h * 4;
     snap[i] = layer_new(layers[i]->w, layers[i]->h);
     if (!snap[i]) { while (--i >= 0) layer_free(snap[i]); free(snap); return 0; }
-    memcpy(snap[i]->px, layers[i]->px, n * sizeof(uint16_t));
+    busy_copy(snap[i]->px, layers[i]->px, n * sizeof(uint16_t));
     snap[i]->x = layers[i]->x; snap[i]->y = layers[i]->y;
     snap[i]->visible = layers[i]->visible;
     snap[i]->opacity = layers[i]->opacity;
@@ -1959,7 +1984,7 @@ ur_restore_pixels(UndoRecord *r)
     if (!npx) return;
     free(al->px); al->px = npx; al->w = r->up_w; al->h = r->up_h;
   }
-  memcpy(al->px, r->up_px, (size_t)r->up_w * r->up_h * 4 * sizeof(uint16_t));
+  busy_copy(al->px, r->up_px, (size_t)r->up_w * r->up_h * 4 * sizeof(uint16_t));
   al->x = r->up_x; al->y = r->up_y;
   active_layer = r->up_idx;
   modified = 1; canvas_composite();
@@ -1986,7 +2011,7 @@ ur_restore_canvas(UndoRecord *r)
     size_t  n   = (size_t)src->w * src->h * 4;
     layers[i] = layer_new(src->w, src->h);
     if (!layers[i]) continue;
-    memcpy(layers[i]->px, src->px, n * sizeof(uint16_t));
+    busy_copy(layers[i]->px, src->px, n * sizeof(uint16_t));
     layers[i]->x = src->x; layers[i]->y = src->y;
     layers[i]->visible = src->visible;
     layers[i]->opacity = src->opacity;
@@ -2444,6 +2469,7 @@ brush_paint(int ix, int iy)
   if (y1 > (int)al->h) y1 = (int)al->h;
 
   for (y = y0; y < y1; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = x0; x < x1; x++) {
       if (!paint_selected(al, x, y)) continue;
       int    dx = x - ix, dy = y - iy;
@@ -2583,6 +2609,7 @@ eraser_paint(int ix, int iy)
   if (x1 > (int)al->w) x1 = (int)al->w;
   if (y1 > (int)al->h) y1 = (int)al->h;
   for (y = y0; y < y1; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = x0; x < x1; x++) {
       if (!paint_selected(al, x, y)) continue;
       size_t i;
@@ -2625,6 +2652,7 @@ decolor_paint(int ix, int iy)
   if (y1 > (int)al->h) y1 = (int)al->h;
 
   for (y = y0; y < y1; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = x0; x < x1; x++) {
       if (!paint_selected(al, x, y)) continue;
       size_t i;
@@ -2694,6 +2722,7 @@ airbrush_paint(int ix, int iy)
     sigma = rf * 0.5f;
     if (sigma < 1.0f) sigma = 1.0f;
     for (y = y0; y < y1; y++) {
+      if ((y & 63) == 0) busy_checkpoint();
       for (x = x0; x < x1; x++) {
         if (!paint_selected(al, x, y)) continue;
         int      dx   = x - ix, dy = y - iy;
@@ -2737,6 +2766,7 @@ area_copypasta_paint(int ix, int iy)
   x1 = ix + r;  y1 = iy + r;
   if (brush_size & 1) { x1++; y1++; }
   for (y = y0; y < y1; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     int ly = y - al->y;
     int sy = y + area_copypasta_dy;
     if (ly < 0 || ly >= (int)al->h) continue;
@@ -2835,6 +2865,7 @@ flood_fill(int ix, int iy)
   visited[(size_t)iy * al->w + ix] = 1;
 
   while (head < tail) {
+    if ((head & 4095) == 0) busy_checkpoint();
     x = queue[head*2+0];
     y = queue[head*2+1];
     head++;
@@ -2933,6 +2964,7 @@ scale_px_bilinear(const uint16_t *src, uint32_t sw, uint32_t sh,
   dst = malloc((size_t)dw * dh * 4 * sizeof(uint16_t));
   if (!dst) return NULL;
   for (dy = 0; dy < dh; dy++) {
+    if ((dy & 63) == 0) busy_checkpoint();
     float sy_f = (dh > 1) ? (float)dy * (float)(sh - 1) / (float)(dh - 1) : 0.0f;
     int sy0 = (int)sy_f;
     int sy1 = (sy0 + 1 < (int)sh) ? sy0 + 1 : sy0;
@@ -2969,6 +3001,7 @@ scale_px(const uint16_t *src, uint32_t sw, uint32_t sh,
   dst = malloc((size_t)dw * dh * 4 * sizeof(uint16_t));
   if (!dst) return NULL;
   for (y = 0; y < dh; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     uint32_t sy = (uint32_t)(((uint64_t)y * 2 + 1) * sh / ((uint64_t)dh * 2));
     for (x = 0; x < dw; x++) {
       uint32_t sx = (uint32_t)(((uint64_t)x * 2 + 1) * sw / ((uint64_t)dw * 2));
@@ -3208,6 +3241,7 @@ layer_convert_1bit(Layer *lay)
   err = calloc((size_t)w * h, sizeof(int32_t));
   if (!err) return;
   for (y = 0; y < h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = 0; x < w; x++) {
       const uint16_t *p = lay->px + (y * w + x) * 4;
       uint32_t luma = ((uint32_t)p[0] * 19595u
@@ -3217,6 +3251,7 @@ layer_convert_1bit(Layer *lay)
     }
   }
   for (y = 0; y < h; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     for (x = 0; x < w; x++) {
       uint16_t *p = lay->px + (y * w + x) * 4;
       int32_t   v, e;
@@ -3396,6 +3431,7 @@ stb_load_as_ff(const char *path)
 static int
 load_file(const char *path)
 {
+  busy_file_hint();
   FFImage *img;
   WMDDocument doc;
   if (wmd_suffix(path, ".wmd") || wmd_suffix(path, ".wmd.bz2")) {
@@ -3419,6 +3455,7 @@ load_file(const char *path)
 static int
 load_file_as_layer(const char *path)
 {
+  busy_file_hint();
   FFImage *img;
   Layer   *nl;
   int      i, pos;
@@ -3493,6 +3530,7 @@ is_stb_image_path(const char *path)
 static int
 save_document_path(const char *path, char *actual, size_t actual_cap)
 {
+  busy_file_hint();
   int result = 0;
   if (!path || !path[0] || !canvas) return 0;
   if (wmd_suffix(path, ".wmd") || wmd_suffix(path, ".wmd.bz2")) {
@@ -3520,6 +3558,7 @@ save_document_path(const char *path, char *actual, size_t actual_cap)
 static void
 do_save(void)
 {
+  busy_file_hint();
   char actual[4096];
   if (!canvas) return;
   if (filepath[0]) {
@@ -3840,6 +3879,103 @@ text_measure(int *out_w, int *out_h)
   if (*out_h < 1) *out_h = 1;
 }
 
+/* Render only complete sample glyphs into a white, panel-sized micro canvas.
+ * This uses the selected font without touching the live text or document. */
+static unsigned char *
+text_preview_pixels(int w, int h)
+{
+  const char *sample = "The quick brown fox jumps over the lazy dog.";
+  unsigned char *pixels;
+  int size = text_size < 24 ? text_size : 24;
+  int x = 4, y = 4, ascent = 0, descent, gap, line_h, bs;
+  float scale = 0;
+  if (w <= 8 || h <= 8 || !load_font(text_font_sel)) return NULL;
+  pixels = malloc((size_t)w * h * 4);
+  if (!pixels) return NULL;
+  memset(pixels, 255, (size_t)w * h * 4);
+  bs = (size + 8) / 16; if (bs < 1) bs = 1;
+  if (bitmap_font_loaded) line_h = 16 * bs;
+  else {
+    scale = stbtt_ScaleForPixelHeight(&ttf_info, (float)size);
+    stbtt_GetFontVMetrics(&ttf_info, &ascent, &descent, &gap);
+    line_h = (int)((ascent - descent + gap) * scale);
+    if (line_h < 1) line_h = size;
+  }
+  for (; *sample; sample++) {
+    int cp = (unsigned char)*sample, adv, lsb, bw, bh, xo = 0, yo = 0;
+    int gx, gy, stride = 0, right;
+    unsigned char *bitmap = NULL;
+    const unsigned char *glyph = NULL;
+    if (bitmap_font_loaded) {
+      glyph = bitmap_glyph(cp, &bw, &bh, &stride);
+      if (!glyph) continue;
+      bw *= bs; bh *= bs; adv = bw;
+    } else {
+      stbtt_GetCodepointHMetrics(&ttf_info, cp, &adv, &lsb);
+      adv = (int)(adv * scale);
+      bitmap = stbtt_GetCodepointBitmap(&ttf_info, 0, scale, cp, &bw, &bh, &xo, &yo);
+      yo += (int)(ascent * scale);
+    }
+    right = adv > xo + bw ? adv : xo + bw;
+    if (x + right > w - 4) { x = 4; y += line_h; }
+    if (y + line_h > h - 4 || x + right > w - 4 ||
+        y + yo + bh > h - 4) {
+      if (bitmap) stbtt_FreeBitmap(bitmap, NULL);
+      break;
+    }
+    if (x + xo >= 4 && y + yo >= 4) {
+      for (gy = 0; gy < bh; gy++) for (gx = 0; gx < bw; gx++) {
+        unsigned char coverage = glyph ?
+          ((glyph[(gy / bs) * stride + (gx / bs) / 8] &
+            (0x80u >> ((gx / bs) % 8))) ? 255 : 0) :
+          (bitmap ? bitmap[gy * bw + gx] : 0);
+        size_t i = ((size_t)(y + yo + gy) * w + x + xo + gx) * 4;
+        pixels[i] = pixels[i+1] = pixels[i+2] = 255 - coverage;
+      }
+    }
+    if (bitmap) stbtt_FreeBitmap(bitmap, NULL);
+    x += adv;
+  }
+  return pixels;
+}
+
+static void
+ui_text_preview(struct nk_context *ctx)
+{
+  struct nk_rect r;
+  int w, h;
+  nk_layout_row_dynamic(ctx, 60, 1);
+  r = nk_widget_bounds(ctx); w = (int)r.w; h = (int)r.h;
+  if (!text_preview_tex || text_preview_font != text_font_sel ||
+      text_preview_size != text_size || text_preview_w != w || text_preview_h != h) {
+    unsigned char *pixels = text_preview_pixels(w, h);
+    if (text_preview_tex) SDL_DestroyTexture(text_preview_tex);
+    text_preview_tex = NULL;
+    if (pixels) {
+      text_preview_tex = SDL_CreateTexture(sdl_ren, SDL_PIXELFORMAT_RGBA32,
+                                           SDL_TEXTUREACCESS_STATIC, w, h);
+      if (text_preview_tex) SDL_UpdateTexture(text_preview_tex, NULL, pixels, w * 4);
+      free(pixels);
+    }
+    text_preview_font = text_font_sel; text_preview_size = text_size;
+    text_preview_w = w; text_preview_h = h;
+  }
+  if (text_preview_tex) nk_image(ctx, nk_image_ptr(text_preview_tex));
+  else {
+    nk_spacing(ctx, 1);
+    nk_fill_rect(nk_window_get_canvas(ctx), r, 0, nk_rgb(255, 255, 255));
+  }
+}
+
+/* Include a visible insertion box even before the first character is typed. */
+static void
+text_area_size(int *w, int *h)
+{
+  int minimum = (text_size + 1) / 2;
+  text_measure(w, h);
+  if (*w < minimum) *w = minimum;
+}
+
 /* re-render text_buf into the text layer from scratch */
 static void
 text_render(void)
@@ -4047,6 +4183,7 @@ shape_rect_commit(int x0, int y0, int x1, int y1)
     shape_plot(al, x, ry);
   }
   for (y = ly + 1; y < ry; y++) {
+    if ((y & 63) == 0) busy_checkpoint();
     shape_plot(al, lx, y);
     shape_plot(al, rx, y);
   }
@@ -4230,6 +4367,7 @@ layer_unpremultiply_composite(Layer *l)
   if (!l) return;
   n = (size_t)l->w * l->h;
   for (i = 0; i < n; i++) {
+    if ((i & 65535) == 0) busy_checkpoint();
     uint16_t *p = l->px + i * 4;
     uint32_t a = p[3];
     int c;
@@ -4373,6 +4511,7 @@ layer_thumbs_refresh(void)
     if (dh < 1) dh = 1;
     ox = (36 - dw) / 2; oy = (22 - dh) / 2;
     for (y = 0; y < dh; y++) for (x = 0; x < dw; x++) {
+      if (x == 0 && (y & 63) == 0) busy_checkpoint();
       int sx = x * (int)l->w / dw, sy = y * (int)l->h / dh;
       size_t si = ((size_t)sy * l->w + sx) * 4;
       size_t di = ((size_t)(oy + y) * 36 + ox + x) * 4;
@@ -4581,6 +4720,7 @@ ui_layer_panel(struct nk_context *ctx)
 static void
 make_backup(const char *path)
 {
+  busy_file_hint();
   char bak[4096 + 4];
   char buf[4096];
   FILE *src, *dst;
@@ -4591,8 +4731,10 @@ make_backup(const char *path)
   if (!src) return;
   dst = fopen(bak, "wb");
   if (!dst) { fclose(src); return; }
-  while ((n = fread(buf, 1, sizeof buf, src)) > 0)
+  while ((n = fread(buf, 1, sizeof buf, src)) > 0) {
+    busy_checkpoint();
     fwrite(buf, 1, n, dst);
+  }
   fclose(src);
   fclose(dst);
 }
@@ -4605,6 +4747,7 @@ make_backup(const char *path)
 static int
 export_image(const char *path)
 {
+  busy_file_hint();
   unsigned char *buf;
   size_t i, npx;
   const char *ext;
@@ -4747,6 +4890,7 @@ ui_filebrowser(struct nk_context *ctx)
     fb_result(result, sizeof result);
     if (result[0]) {
       int ok = 1;
+      busy_file_hint();
       if (fb_mode == FB_MODE_OPEN) {
         if (fb_open_spawns) {
           spawn_new(result);
@@ -4870,18 +5014,35 @@ ui_text_panel(struct nk_context *ctx)
 {
 #if !NOTTF
   int k;
-  if (active_tool != TOOL_TEXT) { nk_window_close(ctx, "text_tool"); return; }
+  if (active_tool != TOOL_TEXT) {
+    text_font_reveal = 1;
+    nk_window_close(ctx, "text_tool"); return;
+  }
   scan_fonts(); /* no-op after first call */
 
   if (!nk_begin(ctx, "text_tool",
-                nk_rect((float)POPUP_X, (float)POPUP_Y, 210, 290),
+                nk_rect((float)POPUP_X, (float)POPUP_Y, 210, 430),
                 NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR))
     goto end;
 
   /* font list */
-  nk_layout_row_dynamic(ctx, 150, 1);
-  if (nk_group_begin(ctx, "font_list", NK_WINDOW_BORDER)) {
+  nk_layout_row_dynamic(ctx, 130, 1);
+  if (nk_group_scrolled_begin(ctx, &text_font_scroll, "font_list", NK_WINDOW_BORDER)) {
     nk_layout_row_dynamic(ctx, 20, 1);
+    if (text_font_reveal) {
+      struct nk_rect first = nk_widget_bounds(ctx);
+      struct nk_rect view = nk_window_get_content_region(ctx);
+      float top = first.y + text_font_sel * (20 + ctx->style.window.spacing.y);
+      /* Move only far enough to expose the whole selected row. */
+      if (top < view.y) {
+        float delta = ceilf(view.y - top);
+        text_font_scroll.y = delta > text_font_scroll.y ? 0 :
+                             text_font_scroll.y - (nk_uint)delta;
+      } else if (top + first.h > view.y + view.h) {
+        text_font_scroll.y += (nk_uint)ceilf(top + first.h - view.y - view.h);
+      }
+      text_font_reveal = 0;
+    }
     for (k = 0; k < nfonts; k++) {
       if (nk_select_label(ctx, font_names[k], NK_TEXT_LEFT, text_font_sel == k)) {
         if (text_font_sel != k) {
@@ -4893,6 +5054,8 @@ ui_text_panel(struct nk_context *ctx)
     }
     nk_group_end(ctx);
   }
+  ui_text_preview(ctx);
+  nk_layout_row_dynamic(ctx, 16, 1);
   {
     char found[64];
     if (ttf_font_count == 0)
@@ -4925,10 +5088,8 @@ ui_text_panel(struct nk_context *ctx)
   nk_layout_row_dynamic(ctx, 20, 1);
   if (text_active) {
     char st[64];
-    snprintf(st, sizeof st, "typing... (%d chars)", (int)strlen(text_buf));
+    snprintf(st, sizeof st, "typing (%d chars) — Esc finishes", (int)strlen(text_buf));
     nk_label(ctx, st, NK_TEXT_LEFT);
-    nk_layout_row_dynamic(ctx, 20, 1);
-    nk_label(ctx, "Esc to finish", NK_TEXT_LEFT);
   } else {
     nk_label(ctx, "click canvas to place", NK_TEXT_LEFT);
   }
@@ -6099,6 +6260,8 @@ main(int argc, char *argv[])
     int cursor_in_canvas = 0;
     int cursor_ix = 0, cursor_iy = 0;
 
+    busy_begin();
+
     /* --- gather input --- */
     nk_input_begin(ctx);
     while (SDL_PollEvent(&evt)) {
@@ -6269,8 +6432,10 @@ main(int argc, char *argv[])
 	  text_font_sel += (sym == SDLK_DOWN) ? 1 : -1;
 	  if (text_font_sel < 0)       text_font_sel = nfonts - 1;
 	  if (text_font_sel >= nfonts) text_font_sel = 0;
+	  text_font_reveal = 1;
 	  load_font(text_font_sel);
 	  if (text_active) text_render();
+	  nk_gets_it = 0;
 	}
 #endif
       }
@@ -6908,7 +7073,9 @@ main(int argc, char *argv[])
       #undef lmb_canvas_press
     }
 
+    busy_end();
     /* --- render --- */
+    busy_frame_begin();
     SDL_SetRenderDrawColor(sdl_ren, BG_R, BG_G, BG_B, 255);
     SDL_RenderClear(sdl_ren);
 
@@ -7119,15 +7286,40 @@ main(int argc, char *argv[])
       }
     }
 
+#if !NOTTF
+    if (canvas && text_active && active_tool == TOOL_TEXT &&
+        text_layer_idx >= 0 && text_layer_idx < nlayers) {
+      int tw, th;
+      SDL_Rect area;
+      text_area_size(&tw, &th);
+      area.x = img_x + text_cx * img_dw / (int)canvas->w;
+      area.y = img_y + text_cy * img_dh / (int)canvas->h;
+      area.w = tw * img_dw / (int)canvas->w;
+      area.h = th * img_dh / (int)canvas->h;
+      if (area.w < 6) area.w = 6;
+      if (area.h < 6) area.h = 6;
+      SDL_SetRenderDrawColor(sdl_ren, 255, 255, 255, 255);
+      WMD_RenderDrawRect(sdl_ren, &area);
+      area.x--; area.y--; area.w += 2; area.h += 2;
+      SDL_SetRenderDrawColor(sdl_ren, 40, 130, 255, 255);
+      WMD_RenderDrawRect(sdl_ren, &area);
+    }
+#endif
+
     /* Nuklear UI on top — panels, menus, and all popups */
     WMD_NK_RENDER(NK_ANTI_ALIASING_ON);
 
-    SDL_RenderPresent(sdl_ren);
+    busy_frame_present();
 #if SLOWPOKE_MODE
     SDL_Delay(SLOWPOKE_MS); /* vsync unreliable on this hw; yield to OS */
 #endif
   }
  quit:
+  busy_free();
+#if !NOTTF
+  if (text_preview_tex) { SDL_DestroyTexture(text_preview_tex); text_preview_tex = NULL; }
+  free(ttf_data); ttf_data = NULL;
+#endif
   brushes_free_all();
   if (icons_tex) { SDL_DestroyTexture(icons_tex); icons_tex = NULL; }
   if (logo_tex)  { SDL_DestroyTexture(logo_tex);  logo_tex  = NULL; }

@@ -57,6 +57,10 @@ layer_free(Layer *l)
  * Alpha-composite layer onto dst, clipped to canvas rect [cx0,cx1) x [cy0,cy1).
  * Layer pixels outside dst bounds or the clip rect are silently skipped.
  */
+#ifndef WMD_WORK_CHECKPOINT
+#define WMD_WORK_CHECKPOINT() ((void)0)
+#endif
+
 static void
 layer_flatten_rect(const Layer *l, FFImage *dst,
                    int cx0, int cy0, int cx1, int cy1)
@@ -88,6 +92,7 @@ layer_flatten_rect(const Layer *l, FFImage *dst,
 	 * out of the general translucent/non-Normal blend loop. */
 	if (l->blend_mode == LAYER_BLEND_NORMAL && l->opacity == 1.0f) {
 		for (y = y0; y < y1; y++) {
+			if ((y & 63) == 0) WMD_WORK_CHECKPOINT();
 			const uint16_t *s = l->px + ((size_t)y * l->w + x0) * 4;
 			uint16_t *d = dst->px + ((size_t)(l->y+y) * dst->w + (size_t)(l->x+x0)) * 4;
 			for (x = x0; x < x1; x++, s += 4, d += 4) {
@@ -107,6 +112,7 @@ layer_flatten_rect(const Layer *l, FFImage *dst,
 	}
 
 	for (y = y0; y < y1; y++) {
+		if ((y & 63) == 0) WMD_WORK_CHECKPOINT();
 		dy = l->y + y;
 		for (x = x0; x < x1; x++) {
 			size_t   si, di;

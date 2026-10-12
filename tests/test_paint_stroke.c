@@ -48,6 +48,55 @@ test_recent_colors(void)
   brush_color_set(c);
 }
 
+#if !NOTTF
+static void
+test_text_preview_and_area(void)
+{
+  unsigned char *pixels;
+  int w, h, x, y, ink = 0;
+  int old_size = text_size, old_font = text_font_sel;
+  int old_modified = modified, old_layers = nlayers;
+  char saved_path[4096];
+  scan_fonts();
+  text_font_sel = nfonts - 1;
+  /* Explicit bitmap fixture also works on machines with a full font list. */
+  strcpy(saved_path, font_paths[text_font_sel]);
+  strcpy(font_paths[text_font_sel], "@bitmap");
+  text_size = 16;
+  strcpy(text_buf, "Live text");
+  pixels = text_preview_pixels(176, 60);
+  assert(pixels && strcmp(text_buf, "Live text") == 0);
+  assert(modified == old_modified && nlayers == old_layers);
+  for (y = 0; y < 60; y++) for (x = 0; x < 176; x++) {
+    size_t i = ((size_t)y * 176 + x) * 4;
+    assert(pixels[i+3] == 255);
+    if (x < 4 || x >= 172 || y < 4 || y >= 56) assert(pixels[i] == 255);
+    if (pixels[i] == 0) ink++;
+  }
+  assert(ink > 0); free(pixels);
+  /* A glyph that cannot fit must leave the sample canvas white. */
+  pixels = text_preview_pixels(15, 24); assert(pixels);
+  for (x = 0; x < 15 * 24 * 4; x++) assert(pixels[x] == 255);
+  free(pixels);
+  text_buf[0] = 0; text_area_size(&w, &h); assert(w == 8 && h == 16);
+  strcpy(text_buf, "AB"); text_area_size(&w, &h); assert(w == 16 && h == 16);
+  strcpy(text_buf, "AB\nC"); text_area_size(&w, &h); assert(w == 16 && h == 32);
+  text_backspace(); text_backspace();
+  text_area_size(&w, &h); assert(w == 16 && h == 16);
+  strcpy(font_paths[text_font_sel], saved_path);
+  /* Exercise normal font rasterization when the machine has TTF fonts. */
+  if (ttf_font_count > 0) {
+    text_font_sel = 0;
+    pixels = text_preview_pixels(176, 60); assert(pixels);
+    ink = 0;
+    for (x = 0; x < 176 * 60; x++) if (pixels[x*4] < 255) ink++;
+    assert(ink > 0); free(pixels);
+  }
+  text_buf[0] = 0; text_size = old_size; text_font_sel = old_font;
+  free(ttf_data); ttf_data = NULL; ttf_loaded = bitmap_font_loaded = 0; ttf_which = -1;
+}
+#endif
+
 static void
 reference_stroke(int x0, int y0, int x1, int y1, void (*paint)(int, int))
 {
@@ -220,8 +269,18 @@ main(void)
     brush_active = -1; brush_def_n = 0; brush_defs[0].bits = NULL;
   }
   layers[0]->alpha_lock = 0;
+  /* Real selection/fill callbacks must preserve pixels with activity drawing enabled. */
+  busy_frame_begin();
+  SDL_SetRenderDrawColor(sdl_ren, 20, 20, 20, 255); SDL_RenderClear(sdl_ren);
+  busy_frame_present();
+  busy_begin(); busy_started -= 200; busy_last_draw -= 200;
   test_selection_painting();
+  assert(busy_visible);
+  busy_end(); busy_free();
   test_recent_colors();
+#if !NOTTF
+  test_text_preview_and_area();
+#endif
   pirate_mode = 0; area_copypasta_source_set = 0;
   uploads = 0;
   paint_stroke(1, 1, 8, 8, area_copypasta_paint);

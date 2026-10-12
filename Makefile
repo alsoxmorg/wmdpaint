@@ -14,7 +14,7 @@ endif
 CFLAGS  = -std=c99 -Wall -Wextra -O2 -Isrc $(SDL_CFLAGS) $(CONFIG_CFLAGS)
 LDFLAGS = $(SDL_LIBS) -lm
 
-PAINT_DEPS  = src/config_paint.h src/create.h src/filebrowser.h src/farbfeld.h \
+PAINT_DEPS  = src/config_paint.h src/busy.h src/create.h src/filebrowser.h src/farbfeld.h \
               src/1fpirate.h src/layer.h src/canvas_render.h src/icons_data.h src/logo_data.h \
               src/stb_image_write.h src/stb_truetype.h src/wmdarchive.h \
               src/bitmap_font_data.h
@@ -47,18 +47,19 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(BIN) tests/test_wmdarchive tests/bench_canvas tests/test_canvas_render tests/test_paint_stroke tests/test_layer_resize tests/test_image_formats tests/test_document_ops
+	rm -f $(BIN) tests/test_wmdarchive tests/bench_canvas tests/test_canvas_render tests/test_paint_stroke tests/test_layer_resize tests/test_image_formats tests/test_document_ops tests/test_busy
 
 tests/test_wmdarchive: tests/test_wmdarchive.c src/config_paint.h src/layer.h src/wmdarchive.h
 	$(CC) -std=c99 -Wall -Wextra -Wno-unused-function -O2 -Isrc -o $@ $<
 
-test: tests/test_wmdarchive tests/test_canvas_render tests/test_paint_stroke tests/test_layer_resize tests/test_image_formats tests/test_document_ops
+test: tests/test_wmdarchive tests/test_canvas_render tests/test_paint_stroke tests/test_layer_resize tests/test_image_formats tests/test_document_ops tests/test_busy
 	./tests/test_wmdarchive
 	./tests/test_canvas_render
 	./tests/test_paint_stroke
 	./tests/test_layer_resize
 	./tests/test_image_formats
 	./tests/test_document_ops
+	./tests/test_busy
 
 check-config:
 	$(MAKE) clean
@@ -96,3 +97,6 @@ tests/test_image_formats: tests/test_image_formats.c src/farbfeld.h src/1fpirate
 
 tests/test_document_ops: tests/test_document_ops.c src/wmdpaint.c $(PAINT_DEPS) src/config.h src/sdl_wmd.h src/stb_image.h src/nuklear.h src/$(NK_RENDERER)
 	$(CC) $(CFLAGS) -O0 -Wno-unused-function -o $@ $< $(LDFLAGS)
+
+tests/test_busy: tests/test_busy.c src/busy.h src/bitmap_font_data.h src/config_paint.h src/config.h src/sdl_wmd.h
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
