@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=wmdpaint
+GenericName=Raster Paint
+Comment=Weapons of mass drawing — a suckless-style raster paint program
+Exec=wmdpaint %F
+Icon=wmdpaint
+Terminal=false
+Categories=Graphics;RasterGraphics;
+MimeType=image/x-farbfeld;image/png;image/jpeg;image/gif;image/bmp;image/tiff;image/webp;
+Keywords=paint;draw;farbfeld;pixel;raster;

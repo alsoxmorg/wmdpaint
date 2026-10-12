@@ -1,0 +1,103 @@
+CC      = cc
+
+# Read WMD_SDL_VERSION from config.h so the build flags always match the code.
+WMD_SDL_VER := $(shell awk '/define WMD_SDL_VERSION/{print $$3}' src/config.h)
+ifeq ($(WMD_SDL_VER),3)
+  # Prefer sdl3-config, then pkg-config, then brew --prefix (macOS Homebrew fallback)
+  SDL_CFLAGS  := $(shell sdl3-config --cflags 2>/dev/null || pkg-config --cflags sdl3 2>/dev/null || (b=$$(brew --prefix sdl3 2>/dev/null) && test -n "$$b" && echo "-I$$b/include"))
+  SDL_LIBS    := $(shell sdl3-config --libs   2>/dev/null || pkg-config --libs   sdl3 2>/dev/null || (b=$$(brew --prefix sdl3 2>/dev/null) && test -n "$$b" && echo "-L$$b/lib -lSDL3"))
+  NK_SDL_RENDERER := src/nuklear_sdl3_renderer.h
+else
+  SDL_CFLAGS  := $(shell sdl2-config --cflags 2>/dev/null || pkg-config --cflags sdl2 2>/dev/null || (b=$$(brew --prefix sdl2 2>/dev/null) && test -n "$$b" && echo "-I$$b/include"))
+  SDL_LIBS    := $(shell sdl2-config --libs   2>/dev/null || pkg-config --libs   sdl2 2>/dev/null || (b=$$(brew --prefix sdl2 2>/dev/null) && test -n "$$b" && echo "-L$$b/lib -lSDL2"))
+  NK_SDL_RENDERER := src/nuklear_sdl_renderer.h
+endif
+
+CFLAGS  = -std=c99 -Wall -Wextra -O2 -I. $(SDL_CFLAGS)
+LDFLAGS = $(SDL_LIBS) -lm
+
+BIN = wmdpaint
+SRC = src/main.c
+
+# Generated headers — embedded binary assets (rebuilt when source data changes)
+ASSET_HDRS = src/icons_data.h src/logo_data.h
+
+all: $(BIN)
+
+$(BIN): $(SRC) src/nuklear.h $(NK_SDL_RENDERER) \
+        src/stb_image.h src/stb_image_write.h src/stb_truetype.h \
+        src/farbfeld.h src/config.h src/create.h src/filebrowser.h src/sdl_wmd.h \
+        $(ASSET_HDRS)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
+
+src/icons_data.h: data/icons.1fpirate
+	xxd -i $< > $@
+
+src/logo_data.h: data/wmdlogo.png
+	xxd -i $< > $@
+
+# Fetch vendored single-file headers
+src/nuklear.h:
+	curl -sLo $@ https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/nuklear.h
+
+src/nuklear_sdl_renderer.h:
+	curl -sLo $@ https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/demo/sdl_renderer/nuklear_sdl_renderer.h
+
+src/nuklear_sdl3_renderer.h:
+	curl -sLo $@ https://raw.githubusercontent.com/Immediate-Mode-UI/Nuklear/master/demo/sdl3_renderer/nuklear_sdl3_renderer.h
+
+src/stb_image.h:
+	curl -sLo $@ https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
+
+src/stb_image_write.h:
+	curl -sLo $@ https://raw.githubusercontent.com/nothings/stb/master/stb_image_write.h
+
+src/stb_truetype.h:
+	curl -sLo $@ https://raw.githubusercontent.com/nothings/stb/master/stb_truetype.h
+
+fetch: src/nuklear.h src/nuklear_sdl_renderer.h src/nuklear_sdl3_renderer.h \
+       src/stb_image.h src/stb_image_write.h src/stb_truetype.h
+
+PREFIX  ?= /usr/local
+DESTDIR ?=
+
+install: $(BIN)
+	install -Dm755 $(BIN)               $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	install -Dm644 wmdpaint.desktop     $(DESTDIR)$(PREFIX)/share/applications/wmdpaint.desktop
+	install -Dm644 data/wmdlogo.png     $(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps/wmdpaint.png
+	install -Dm644 wmdpaint.1           $(DESTDIR)$(PREFIX)/share/man/man1/wmdpaint.1
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	rm -f $(DESTDIR)$(PREFIX)/share/applications/wmdpaint.desktop
+	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps/wmdpaint.png
+	rm -f $(DESTDIR)$(PREFIX)/share/man/man1/wmdpaint.1
+
+# Old-school GNU/Linux install: binary to /usr/local/bin, data to
+# /usr/local/share/wmdpaint, .desktop to /usr/share/applications,
+# icon to /usr/share/pixmaps (no hicolor dependency required).
+retroinstall: $(BIN)
+	install -Dm755 $(BIN)                        /usr/local/bin/$(BIN)
+	install -Dm644 wmdpaint.1                    /usr/local/share/man/man1/wmdpaint.1
+	install -Dm644 data/wmdlogo.png              /usr/local/share/wmdpaint/wmdlogo.png
+	install -Dm644 data/icons.1fpirate           /usr/local/share/wmdpaint/icons.1fpirate
+	cp -r data/fonts                             /usr/local/share/wmdpaint/fonts
+	install -Dm644 wmdpaint.desktop              /usr/share/applications/wmdpaint.desktop
+	install -Dm644 data/wmdlogo.png              /usr/share/pixmaps/wmdpaint.png
+
+retrouninstall retrodeleteinstall:
+	rm -f  /usr/local/bin/$(BIN)
+	rm -f  /usr/local/share/man/man1/wmdpaint.1
+	rm -rf /usr/local/share/wmdpaint
+	rm -f  /usr/share/applications/wmdpaint.desktop
+	rm -f  /usr/share/pixmaps/wmdpaint.png
+
+clean:
+	rm -f $(BIN) $(ASSET_HDRS)
+	rm *~ src/*~
+
+distclean: clean
+	rm -f src/nuklear.h src/nuklear_sdl_renderer.h src/nuklear_sdl3_renderer.h \
+	      src/stb_image.h src/stb_image_write.h src/stb_truetype.h
+
+.PHONY: all fetch clean distclean install uninstall retroinstall retrouninstall retrodeleteinstall

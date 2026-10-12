@@ -1,0 +1,17 @@
+--- wmdpaint.c
++++ wmdpaint.c
+@@ -4080,11 +4080,11 @@
+ 	    canvas_zoom  = zx < zy ? zx : zy;
+ 	    canvas_pan_x = 0; canvas_pan_y = 0;
+ 	  }
+-	} else if (!text_field_focused && sym == SDLK_G) {
++	} else if (!text_field_focused && sym == SDLK_G && (SDL_GetModState() & KMOD_CTRL)) {
+ 	  show_grid = !show_grid;
+-	} else if (!text_field_focused && sym == SDLK_L) {
++	} else if (!text_field_focused && sym == SDLK_L && (SDL_GetModState() & KMOD_CTRL)) {
+ 	  canvas_locked = !canvas_locked;
+-	} else if (!text_field_focused && sym == SDLK_F) {
++	} else if (!text_field_focused && sym == SDLK_F && (SDL_GetModState() & KMOD_CTRL)) {
+ 	  static int wmd_fullscreen = 0;
+ 	  wmd_fullscreen = !wmd_fullscreen;
+ 	  WMD_SetFullscreen(sdl_win, wmd_fullscreen);

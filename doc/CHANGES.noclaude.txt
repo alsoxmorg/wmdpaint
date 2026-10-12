@@ -1,0 +1,9 @@
+Button order
+  - moved buttons aroudn to make the "drawing" type buttons near the top
+
+Added fonts
+  - added a few free, public domain fonts into data/fonts/ to support upcoming
+    text tool.
+
+NOTTF: config.h updated a define for #define NOTTF  this define will support
+  disabling TTF or the text tool entirly.

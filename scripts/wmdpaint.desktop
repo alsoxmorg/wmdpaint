@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=wmdpaint
+Exec=wmdpaint %f
+Icon=wmdpaint
+Categories=Graphics;
+MimeType=image/x-farbfeld;image/png;image/jpeg;image/bmp;image/x-tga;

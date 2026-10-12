@@ -1,0 +1,23 @@
+TODO
+===============
+
+- Measure large canvases and many-layer documents using C99 and existing SDL
+  timing APIs only. Benchmark the clipped dirty-region compositor, then
+  optimize the remaining full-frame work in compositing and texture
+  conversion/upload without new libraries.
+
+- Add drag handles for resizing the active layer on the canvas. Keep the
+  numeric resize panel, preserve aspect-ratio/asymmetric resize behaviour as
+  intended, and make the whole operation one undoable action.
+
+- Add automated regression tests for farbfeld and 1fpirate round trips,
+  layer offsets and alpha compositing, crop/resize operations, and undo/redo.
+  Include malformed/truncated input cases.
+
+- Fix the View menu's duplicate "Fit to Window" entries and define the
+  intended shortcuts. Make the fullscreen shortcut reachable and document
+  the final key bindings consistently.
+
+- Bring HACKING.txt and the user documentation up to date with the current
+  implementation, especially panning, undo/redo, the Help menu, and the
+  remaining resize limitation.

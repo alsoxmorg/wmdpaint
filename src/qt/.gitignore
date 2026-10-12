@@ -1,0 +1,6 @@
+Makefile*
+.qmake.stash
+moc_predefs.h
+*.moc
+*.o
+wmdpaint-qt

@@ -1,0 +1,561 @@
+WMDPAINT — DEVELOPER REFERENCE
+===============================
+A plain-text guide to the source for anyone reading the code cold.
+Files: wmdpaint.c  farbfeld.h  1fpirate.h  layer.h  config.h  config_paint.h
+
+BUILD REQUIREMENTS
+  C99 compiler, SDL2 or SDL3, and — with great
+  regret — xxd.  The Makefile uses xxd to convert binary assets
+  (icons.1fpirate, wmdlogo.png) into C headers (src/icons_data.h,
+  src/logo_data.h) that are compiled directly into the binary.  This
+  removes all runtime asset paths at the cost of a vim-ecosystem build
+  dep.  We are not proud.  xxd ships with vim on most distros; if it
+  is missing: apt install xxd / pacman -S vim / brew install vim.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+0. BIG PICTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Everything compiles as a single translation unit (src/wmdpaint.c).
+The headers are #included directly — not linked separately.
+
+Execution flow each frame:
+  1. SDL_PollEvent loop — raw input gathered
+  2. nk_input_begin / nk_input_end — hand events to Nuklear
+  3. ui_menubar()      — menu bar + all popups
+  4. tools panel       — inline in main(), tool button grid
+  5. ui_layer_panel()  — right-side layer stack panel
+  6. Canvas input      — SDL mouse state → drawing / tool actions
+  7. SDL render        — checkerboard, canvas texture, layer border,
+                         selection overlay, nk_sdl_render (UI on top)
+  8. SDL_RenderPresent
+
+Pixel pipeline summary:
+  draw tool writes → Layer.px (uint16_t RGBA)
+      → canvas_composite() flattens all layers → canvas->px
+          → canvas_image_rebuild() uploads → SDL texture (ctex)
+              → SDL_RenderCopy draws texture to screen
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. farbfeld.h
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The farbfeld format is dead simple:
+  "farbfeld" (8 bytes magic)
+  width  (uint32 big-endian)
+  height (uint32 big-endian)
+  pixels (w*h * 4 * uint16 big-endian, RGBA order)
+
+This is the standard suckless farbfeld wire format.  It is wmdpaint's primary
+native format and must not be extended with private chunks, alternate channel
+orders, reduced channel widths, or wmdpaint-only metadata.  Defensive size and
+overflow checks protect memory allocation; they do not redefine farbfeld.
+
+In memory (FFImage.px) all values are native-endian uint16_t.
+Range is 0–65535 per channel (16-bit colour).
+Big-endian conversion happens ONLY in ff_load / ff_save.
+
+  FFImage
+    .w, .h     — dimensions in pixels
+    .px        — flat array, length w*h*4, indexed as px[i*4+0..3] = RGBA
+
+  ff_new(w, h)         — allocate zeroed FFImage
+  ff_free(img)         — free pixels + struct
+  ff_load_fp(FILE*)    — parse farbfeld from open file handle
+  ff_load(path)        — open file, call ff_load_fp, close
+  ff_save(path, img)   — write farbfeld file (allocates temp BE buffer)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. 1fpirate.h
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1fpirate is a 1-bit sibling of farbfeld, designed for monochrome drawings.
+
+Format:
+  "1fpirate" (8 bytes magic)
+  width  (uint32 big-endian)
+  height (uint32 big-endian)
+  packed rows: each row is ceil(w/8) bytes, MSB first, padded to byte boundary
+  bit=1 → white (0xffff), bit=0 → black (0x0000)
+
+When loaded it becomes a normal FFImage (16-bit RGBA, white/black only).
+When saved, colour images are reduced to 1-bit via BT.601 luminance threshold.
+
+  fp_is_1fpirate_path(path)   — returns 1 if path ends with ".1fpirate"
+  fp_pixel_is_white(r, g, b)  — BT.601 luma threshold; returns 1 if white
+  fp_load_fp(FILE*)           — parse 1fpirate from open file
+  fp_load(path)               — open file, call fp_load_fp, close
+  fp_save(path, img)          — quantise to 1-bit and write
+  fp_image_is_1bit(img)       — (COWARD_MODE only) returns 1 if every pixel
+                                 is already pure black or white (no data loss
+                                 on save)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. layer.h
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A Layer is a pixel buffer that can be offset anywhere on the canvas.
+Layers are blended onto the canvas FFImage via alpha-compositing.
+
+  Layer
+    .px        — uint16_t RGBA pixel buffer, same layout as FFImage.px
+    .x, .y     — top-left position in canvas image coordinates (can be
+                 negative — layer hanging off canvas edge is valid)
+    .w, .h     — layer pixel dimensions (may differ from canvas size)
+    .name[32]  — display name shown in the layer panel
+    .visible   — 0 = skip when compositing
+
+  layer_new(w, h)        — allocate Layer with zeroed (transparent) pixels
+  layer_free(l)          — free .px + struct
+  layer_flatten(l, dst)  — alpha-composite l onto dst FFImage using
+                           the "over" operation (standard Porter-Duff).
+                           Clips pixels outside dst bounds silently.
+                           Formula per channel:
+                             out = (src_alpha * src + (1-src_alpha) * dst) / 65535
+
+Important: layer coordinates are canvas-space, but layer pixel indices are
+layer-local. When you want pixel (cx, cy) from layer l:
+  lx = cx - l->x
+  ly = cy - l->y
+  index = (ly * l->w + lx) * 4
+Always bounds-check lx/ly against l->w/l->h before indexing.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. config.h — compile-time tunables
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  WIN_W, WIN_H        — initial window size in pixels
+  MENU_H              — height of the menu bar panel
+  TOOL_W              — width of the left tool panel
+  DEFAULT_W/H         — dimensions of a blank new image
+  BG_R/G/B            — canvas background colour (around the image)
+  CHECKER_SIZE        — transparency checkerboard square size (screen px)
+  CHECKER_LIGHT/DARK  — the two checker colours (0–255)
+  LAYER_PANEL_W       — width of the right layer panel
+  MAX_LAYERS          — hard cap on number of layers (stack array size)
+  COWARD_MODE         — 1: adds confirm dialogs on New/Exit, warns before
+                         saving colour data to 1fpirate
+  SUCK_MORE           — 1: enables Export menu item (PNG/JPEG/BMP/TGA via
+                         stb_image_write). Purists use external converters.
+  NO_OPENGL           — 1: disables the SDL_HINT_RENDER_DRIVER "opengl" hint
+                         and lets SDL choose whatever backend it can find.
+                         On a system with no GPU or broken OpenGL drivers
+                         this will fall back to software rendering rather
+                         than crashing.  Default 0 (OpenGL hint active).
+  VULKANTARD_MODE     — 1: with SDL3, tries the Vulkan renderer before SDL's
+                         default renderer. Default 0, because some old systems
+                         can crash Xorg inside the Vulkan path before fallback
+                         can run.
+                         Use `make vulkan` or `make VULKANTARD_MODE=1` to
+                         enable it; use `make novulkan` or `make opengl` to
+                         force it off and keep the default OpenGL renderer hint.
+  SLOWPOKE_MODE       — 1: inserts SDL_Delay(SLOWPOKE_MS) at the end of
+                         every frame.  Enable this on slow or experimental
+                         hardware — single-board computers (Orange Pi,
+                         LibreComputer, etc.), ARM tablets and phones
+                         (PineTab2, PinePhone), and any device where the
+                         SDL renderer's vsync does not actually block.
+                         Without vsync blocking, the main loop spins at
+                         thousands of frames per second and pegs a CPU
+                         core at 100%.  A small delay yields the CPU
+                         between frames and drops usage dramatically with
+                         negligible impact on responsiveness.
+  SLOWPOKE_MS         — frame delay in milliseconds when SLOWPOKE_MODE=1.
+                         Default 10 (caps at ~100 fps).  Raise to 16 for
+                         ~60 fps on very constrained hardware.
+
+NOTE: config.h must be #included BEFORE any #if SUCK_MORE / #if COWARD_MODE
+guards, or those macros evaluate to 0. Currently it is included after the
+vendored single-file headers (which can't see config.h) but before all
+application code.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. wmdpaint.c — global state
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SDL handles
+  sdl_win          — SDL_Window*   — the application window
+  sdl_ren          — SDL_Renderer* — accelerated 2D renderer
+
+Window
+  win_w, win_h     — current window dimensions, updated on resize events
+
+Canvas (the "document")
+  canvas           — FFImage* — the composited/flattened image.
+                     This is rebuilt every time any layer changes.
+                     It is what gets saved to disk.
+  filepath[4096]   — path of the currently open file, or "" if unsaved
+  modified         — 1 if there are unsaved changes
+
+Tool selection
+  active_tool      — int, one of the TOOL_* constants:
+                       TOOL_BRUSH    0   freehand paint
+                       TOOL_FILL     1   flood fill (BFS)
+                       TOOL_SELECT   2   rectangle select
+                       TOOL_ERASER   3   eraser
+                       TOOL_TEXT     4   text layers (requires !NOTTF)
+                       TOOL_LINE     5   line / rect / circle
+                       TOOL_EYEDROP  6   colour picker
+                       TOOL_AREA_COPYPASTA
+                                     7   stable area copy brush
+                       TOOL_AIRBRUSH 8   airbrush / spraycan
+                       TOOL_RESIZE   9   resize layer or canvas
+                       TOOL_MOVE    10   drag active layer
+
+Layer stack
+  layers[MAX_LAYERS] — array of Layer* pointers.
+                       Index 0 = bottom (background), index nlayers-1 = top.
+                       ui_layer_panel() displays them top-to-bottom visually.
+  nlayers            — number of active layers (0 = no image)
+  active_layer       — index of the currently selected layer
+
+Clipboard
+  clipboard        — Layer* — owns a copy of the last copied/cut region.
+                     NULL if clipboard is empty.
+                     Freed and replaced on every copy/cut.
+
+Flatten mode
+  flatten_expand   — 0: crop compositing to canvas bounds (default)
+                     1: expand canvas to contain all layer extents on flatten
+
+1fpirate mode
+  pirate_mode      — 1: compositor enforces Floyd-Steinberg dithered
+                     black/white layer pixels after edits. Enabling the mode
+                     first converts every layer to 1-bit. The mode toggle has
+                     its own undo record, but colour data is not restored.
+                     Disabling the mode resumes normal colour writes on the
+                     already-converted line art.
+
+Move tool state
+  move_dragging          — 1 while LMB is held in move mode
+  move_start_ix/iy       — image-space mouse position when drag began
+  move_start_lx/ly       — layer->x/y at drag start (used to compute offset)
+
+Area copypasta tool state
+  area_copypasta_source_set
+                         — 1 after Ctrl+click or right-click sets a source point
+  area_copypasta_ox/oy   — source point in canvas image coords
+  area_copypasta_dx/dy   — offset from brush position to source point
+                           (set on first normal click after source set)
+  area_copypasta_px      — frozen composited source pixels captured when the
+                           source point is selected
+
+Rectangle selection state
+  sel_dragging           — 1 while LMB is held drawing the selection
+  sel_ix0, sel_iy0       — drag anchor in image coords
+  sel_ix1, sel_iy1       — drag cursor (live) in image coords
+  sel_active             — 1 when a finalised selection rect exists
+  sel_x, sel_y, sel_w, sel_h  — finalised selection rect in image coords
+  sel_surface            — SDL_Surface* snapshot of the selected pixels
+                           (captured after mouse release, used for display)
+
+Brush state (all channels are 0–65535 uint16_t)
+  brush_size       — diameter in pixels (1–64)
+  brush_shape      — BRUSH_SQUARE (0) or BRUSH_CIRCLE (1)
+  brush_r/g/b/a    — current brush colour in 16-bit farbfeld values
+  brush_colorf     — mirror of the above as nk_colorf (0.0–1.0 floats),
+                     kept in sync; used by the Nuklear colour picker widget
+  brush_popup_open — 1 when the colour picker popup is visible
+
+Canvas texture (SDL display)
+  ctex             — SDL_Texture* wrapping canvas->px as 8-bit RGBA.
+                     Rebuilt by canvas_image_rebuild() after every draw op.
+  cimg             — nk_image handle for ctex (not actually used by Nuklear
+                     in the current render path; SDL_RenderCopy is used directly)
+  cimg_valid       — 1 when ctex is up to date and safe to render
+
+Canvas view
+  canvas_zoom      — float, current zoom factor (1.0 = 1:1).
+                     Adjusted with +/- keys.
+  canvas_pan_x/y   — int, pixel offset of the canvas within the canvas panel.
+                     (panning not yet wired to input — reserved for future use)
+
+Icons sprite sheet
+  icons_tex        — SDL_Texture* for icons.1fpirate sprite sheet
+  icons_w/h        — sprite sheet dimensions
+
+Tooltip state
+  tip_rect         — nk_rect of the widget currently being timed
+  tip_start        — SDL_GetTicks() when hover on tip_rect began
+  TIP_DELAY_MS     — 2000ms before tooltip appears
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. wmdpaint.c — functions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ICONS
+  icons_load()
+    Loads icons.1fpirate at startup. Converts 1-bit pixels:
+    white → transparent, black → bright grey (220,220,220,255).
+    Uploads result as an SDL texture with BLENDMODE_BLEND so icons
+    render cleanly on any button colour.
+
+  icon_cell(cx) → nk_image
+    Returns a sub-image for column cx (0-based) of the 32px-grid
+    sprite sheet. Used to pass icon sub-rects to nk_button_image().
+
+UTILITIES
+  die(msg)
+    Print error to stderr and exit(1). Used for unrecoverable init failures.
+
+  do_tooltip(ctx, bounds, text)
+    Called after drawing any button. Checks if the mouse is hovering
+    over `bounds`. If the same bounds have been hovered for >= TIP_DELAY_MS
+    milliseconds, draws a Nuklear tooltip with `text`. Moving to a different
+    widget resets the timer.
+
+CANVAS TEXTURE MANAGEMENT
+  canvas_image_free()
+    Destroys ctex and marks cimg_valid = 0.
+
+  canvas_image_rebuild()
+    Converts canvas->px (16-bit RGBA) → 8-bit RGBA buffer, uploads to
+    a new SDL_PIXELFORMAT_RGBA32 texture, stores as ctex.
+    Called at the end of every operation that modifies pixels.
+
+SELECTION UTILITIES
+  sel_blit()
+    Copies the finalised selection rect from canvas->px into sel_surface
+    as 8-bit RGBA. Called once when the mouse is released after dragging
+    a selection. sel_surface is used for future display/reference.
+
+CLIPBOARD OPERATIONS
+  copy_selection()
+    Copies canvas->px pixels within the selection rect into a new clipboard
+    Layer. Reads from the composited canvas (not a single layer), so what
+    you copy is exactly what you see. Bounds-checked per pixel.
+
+  cut_selection()
+    Calls copy_selection(), then zeroes out the corresponding pixels on the
+    active layer. Correctly translates canvas coords to layer-local coords
+    using (cx - al->x, cy - al->y) with bounds checking.
+
+  paste_clipboard()
+    Creates a new Layer from clipboard, inserts it above active_layer,
+    sets active_layer to the new layer, switches to TOOL_MOVE so the user
+    can immediately reposition the paste. Calls canvas_composite().
+
+DRAWING TOOLS
+  brush_paint(ix, iy)
+    Paints a square or circle stamp of brush_size at image coords (ix, iy)
+    on the active layer using the current brush colour.
+
+  eyedrop(ix, iy)
+    Reads the composited canvas pixel at (ix, iy) and sets brush_r/g/b/a
+    and brush_colorf to match. Snaps active_tool back to TOOL_BRUSH.
+
+  eraser_paint(ix, iy)
+    Identical to brush_paint but writes RGBA = (0,0,0,0) — fully
+    transparent — rather than the brush colour.
+
+  area_copypasta_paint(ix, iy)
+    Copies pixels from area_copypasta_px at
+    (ix + area_copypasta_dx, iy + area_copypasta_dy) onto the active layer
+    at (ix, iy). The source buffer is captured when Ctrl+click or
+    right-click selects the source, so a stroke does not feed back into its
+    own source pixels.
+
+  flood_fill(ix, iy)
+    BFS flood fill on the active layer. Finds all pixels connected to
+    (ix, iy) with the same colour and replaces them with the brush colour.
+    Allocates a queue and visited array proportional to layer area.
+
+COMPOSITING
+  canvas_composite()
+    The central update function. Called after every draw operation.
+    1. If flatten_expand is on, grows canvas to the bounding box of all
+       visible layers (shifting all layer offsets accordingly).
+    2. Zeroes canvas->px.
+    3. Calls layer_flatten() for each visible layer in stack order
+       (index 0 first = bottom-most).
+    4. Calls canvas_image_rebuild() to upload the result to the GPU.
+
+IMAGE SCALING
+  scale_px_bilinear(src, sw, sh, dw, dh) → uint16_t*
+    Bilinear resampling of a uint16_t RGBA pixel buffer from (sw x sh)
+    to (dw x dh). Allocates and returns new buffer. Used by img_resize().
+
+  img_resize(nw, nh)
+    Resizes every layer proportionally to new canvas dimensions using
+    bilinear scaling, then replaces the canvas FFImage. Triggers
+    canvas_composite().
+
+LAYER STACK MANAGEMENT
+  layers_clear()
+    Frees all layers in the stack, resets nlayers = 0 and active_layer = 0.
+
+  layer_add_new()
+    Inserts a new blank transparent layer above active_layer.
+
+  layer_delete(idx)
+    Removes layer at idx, shifts the array down, adjusts active_layer.
+    Will not delete the last remaining layer.
+
+  layer_move_up(idx)    — swap layer[idx] with layer[idx+1] (toward front)
+  layer_move_down(idx)  — swap layer[idx] with layer[idx-1] (toward back)
+
+IMAGE LOADING / SAVING
+  load_img(img, path)
+    Takes ownership of an FFImage, creates a single Background layer from
+    it, sets filepath, resets modified flag, calls canvas_composite().
+    path may be NULL (stdin source).
+
+  stb_load_as_ff(path) → FFImage*
+    Loads any stb_image-supported format (PNG, JPEG, BMP, TGA, etc.) and
+    converts 8-bit RGBA → 16-bit RGBA FFImage (multiplies each channel by
+    257 to map 0–255 exactly onto 0–65535).
+
+  load_file(path) → int
+    Tries ff_load, then fp_load (1fpirate), then stb_load_as_ff in order.
+    Returns 1 on success.
+
+  load_stdin() → int
+    Reads a farbfeld image from stdin. Used when stdin is not a tty
+    (i.e., piped input: "cat file.ff | wmdpaint").
+
+  img_new(w, h)
+    Creates a blank canvas + single white Background layer of size w x h.
+
+  make_backup(path)
+    Copies path → path.bak byte-for-byte. Called before Save when
+    backup_enabled is on.
+
+  export_image(path)    [SUCK_MORE only]
+    Converts canvas to 8-bit RGBA and writes via stb_image_write.
+    Format is determined by file extension (.jpg/.jpeg → JPEG quality 90,
+    .bmp → BMP, .tga → TGA, anything else → PNG).
+
+UI PANELS
+  ui_menubar(ctx)
+    Draws the full-width top menu bar using Nuklear's menubar API.
+    Contains: File, Image, Edit, Layers, Colors, Windows (stub), Help (stub).
+    Also owns all modal popups (Open, Save As, Export, Resize, Info,
+    colour picker, and all COWARD_MODE confirm/warn dialogs).
+    State for popups is kept as static locals inside this function.
+
+  ui_layer_panel(ctx)
+    Draws the right-side layer panel. Shows all layers top-to-bottom
+    (highest index = top of visual list). Each row has:
+      checkbox — toggle visibility
+      name     — click to set active_layer
+      ▲ / ▼   — reorder buttons (hidden if already at limit)
+      ✕        — delete (hidden if only one layer)
+
+main()
+    SDL and Nuklear init, font stash setup, initial image load/new,
+    then the main loop described in section 0.
+    Keyboard shortcuts handled in the SDL_KEYDOWN block:
+      +/=  or  Keypad+    zoom in
+      -/_  or  Keypad-    zoom out
+      Ctrl+Z              undo (calls do_undo())
+      Ctrl+C              copy selection
+      Ctrl+X              cut selection
+      Ctrl+V              paste clipboard
+      Escape              cancel active crop
+      Arrow keys          nudge active layer (Move tool; +Shift = 10px steps)
+      Up/Down             cycle font (Text tool, NOTTF=0 only)
+    On SDL_QUIT: cleanup and exit.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. COORDINATE SYSTEMS — the common source of bugs
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Three coordinate systems are in play:
+
+  SCREEN SPACE      — SDL pixels, origin top-left of window
+  CANVAS SPACE      — image pixels, origin top-left of canvas FFImage
+  LAYER-LOCAL SPACE — pixel index within a specific layer's .px array
+
+Conversions:
+
+  Screen → Canvas:
+    ix = (mx - img_x) * canvas->w / img_dw
+    iy = (my - img_y) * canvas->h / img_dh
+    where img_x/y is the canvas top-left on screen,
+    img_dw/dh is the displayed (zoomed) canvas size.
+
+  Canvas → Layer-local:
+    lx = canvas_x - layer->x
+    ly = canvas_y - layer->y
+    Always bounds-check: 0 <= lx < layer->w, 0 <= ly < layer->h
+
+  Canvas → Screen (for overlays):
+    sx = img_x + canvas_x * img_dw / canvas->w
+    sy = img_y + canvas_y * img_dh / canvas->h
+
+The active layer border and selection overlay both use the Canvas→Screen
+conversion. Drawing tools use Screen→Canvas→Layer-local.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. ADDING A NEW TOOL — checklist
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. Add  #define TOOL_MYTOOL <next_int>  near the other TOOL_ defines.
+  2. Add a row to the tbl[] array in the tools panel (lbl, tool, icon_col,
+     tip). Use icon_col = -1 for a text fallback if no icon exists yet.
+  3. Add tool state as file-scope statics if needed.
+  4. Add a branch in the canvas input block (the big if/else chain around
+     "active_tool == TOOL_BRUSH").
+  5. Write the drawing function. It should:
+       - work in layer-local coords (subtract layer->x/y)
+       - bounds-check before every pixel write
+       - set modified = 1
+       - call canvas_composite() when done
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. ADDING AN ICON BUTTON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Icons live in data/icons.1fpirate — a 1-bit sprite sheet with one 32x32
+cell per tool, laid out left to right. Cells are referenced by zero-based
+column index (icon_col in the tbl[] array).
+
+To add a new icon:
+
+  1. Edit data/icons.1fpirate in your preferred pixel editor.
+     - The file must remain exactly 32 pixels tall.
+     - Append one new 32x32 cell at the right edge, making the width
+       grow by 32 (e.g. 320 → 352 for an 11th icon).
+     - Draw in black on white: black becomes the visible icon shape,
+       white becomes transparent at load time (see icons_load()).
+
+  2. Regenerate the embedded header:
+       make src/icons_data.h
+     or manually:
+       xxd -i data/icons.1fpirate > src/icons_data.h
+
+  3. In src/wmdpaint.c, find the icon_col comment above the tbl[] array in the
+     tools panel and add the new entry, e.g.:
+       /* icon_col: ... 10=mytool */
+
+  4. Set the tbl[] row for your tool to use the new column index:
+       {"MYT", TOOL_MYTOOL, 10, "My tool — tooltip here"},
+
+  5. Rebuild: make
+
+If the icons.1fpirate file is missing at runtime, all icon buttons fall
+back to their three-letter text labels automatically — no crash.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+10. KNOWN LIMITATIONS / FUTURE WORK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  TOOL_RESIZE    — panel-driven numeric resize works; drag-to-resize
+                   on canvas not yet implemented (planned)
+  canvas_pan_x/y — pan offset; Ctrl+drag on canvas, reset on zoom-to-fit
+  Windows menu   — no multi-window or panel toggle yet
+  Help menu      — no content yet
+  Undo/Redo      — not implemented
+  icons.1fpirate — if the file is missing at runtime, tool buttons fall
+                   back to three-letter text labels silently

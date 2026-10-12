@@ -1,0 +1,13 @@
+# Build output
+wmdpaint
+*.o
+*.a
+*.so
+core
+
+# Editor and temporary files
+*~
+*.swp
+
+# Local assistant/editor settings
+.claude/settings.local.json
