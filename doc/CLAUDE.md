@@ -33,6 +33,7 @@ configuration. Both are compile-time configuration and require rebuilding.
 | `src/farbfeld.h` | `FFImage` plus standard farbfeld load/save functions |
 | `src/1fpirate.h` | 1-bit monochrome image load/save functions |
 | `src/layer.h` | Layer buffers and clipped compositing |
+| `src/canvas_render.h` | Shared clipped rendering and RGBA8 conversion |
 | `src/wmdarchive.h` | Restricted tar writer and optional external bzip2 compression |
 | `src/sdl_wmd.h` | SDL2/SDL3 compatibility wrappers |
 | `src/filebrowser.h` | Immediate-mode file browser |
@@ -83,8 +84,8 @@ format, impose a smaller valid farbfeld specification, or reduce colour depth.
 - Keep internal colour and alpha values at 16-bit precision.
 - Use farbfeld as the default lossless editing path.
 - Treat non-farbfeld export as optional convenience functionality.
-- Keep normal Save/Save As farbfeld-first; layered `.wmd.bz2` creation is a
-  separate File-menu operation.
+- Preserve layered `.wmd`/`.wmd.bz2` paths through normal Save/Save As;
+  ordinary image paths save the composited image.
 - Avoid new mandatory runtime services, plugin systems, or configuration
   parsers.
 - Update `README.md`, `doc/wmdpaint.md`, and the manual page when user-visible

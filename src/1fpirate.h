@@ -44,7 +44,7 @@ fp_load_fp(FILE *f)
 {
 	char magic[8];
 	uint32_t w, h;
-	int row_bytes;
+	size_t row_bytes;
 	uint8_t *bitmap;
 	FFImage *img;
 	uint32_t x, y;
@@ -56,9 +56,9 @@ fp_load_fp(FILE *f)
 	if (fread(&w, 4, 1, f) != 1 || fread(&h, 4, 1, f) != 1) return NULL;
 	w = ntohl(w);
 	h = ntohl(h);
-	if (!w || !h) return NULL;
+	if (!ff_dimensions_valid(w, h)) return NULL;
 
-	row_bytes = (int)((w + 7) / 8);
+	row_bytes = ((size_t)w + 7) / 8;
 	bitmap = malloc((size_t)row_bytes * h);
 	if (!bitmap) return NULL;
 	if (fread(bitmap, 1, (size_t)row_bytes * h, f) != (size_t)row_bytes * h) {
@@ -71,10 +71,10 @@ fp_load_fp(FILE *f)
 
 	for (y = 0; y < h; y++) {
 		for (x = 0; x < w; x++) {
-			int bidx = (int)y * row_bytes + (int)(x / 8);
+			size_t bidx = (size_t)y * row_bytes + x / 8;
 			int boff = 7 - (int)(x % 8);
 			uint16_t val = ((bitmap[bidx] >> boff) & 1) ? 0xffff : 0x0000;
-			uint16_t *p = img->px + (y * w + x) * 4;
+			uint16_t *p = img->px + ((size_t)y * w + x) * 4;
 			p[0] = val; p[1] = val; p[2] = val; p[3] = 0xffff;
 		}
 	}
@@ -99,7 +99,7 @@ fp_load_mem(const unsigned char *buf, size_t len)
 {
 	char     magic[8];
 	uint32_t w, h, x, y;
-	int      row_bytes;
+	size_t   row_bytes;
 	uint8_t *bitmap;
 	FFImage *img;
 	size_t   pos = 0;
@@ -110,9 +110,9 @@ fp_load_mem(const unsigned char *buf, size_t len)
 	memcpy(&w, buf + pos, 4); pos += 4;
 	memcpy(&h, buf + pos, 4); pos += 4;
 	w = ntohl(w); h = ntohl(h);
-	if (!w || !h) return NULL;
-	row_bytes = (int)((w + 7) / 8);
-	if (pos + (size_t)row_bytes * h > len) return NULL;
+	if (!ff_dimensions_valid(w, h)) return NULL;
+	row_bytes = ((size_t)w + 7) / 8;
+	if ((size_t)row_bytes * h > len - pos) return NULL;
 	bitmap = malloc((size_t)row_bytes * h);
 	if (!bitmap) return NULL;
 	memcpy(bitmap, buf + pos, (size_t)row_bytes * h);
@@ -120,10 +120,10 @@ fp_load_mem(const unsigned char *buf, size_t len)
 	if (!img) { free(bitmap); return NULL; }
 	for (y = 0; y < h; y++) {
 		for (x = 0; x < w; x++) {
-			int bidx = (int)y * row_bytes + (int)(x / 8);
+			size_t bidx = (size_t)y * row_bytes + x / 8;
 			int boff = 7 - (int)(x % 8);
 			uint16_t val = ((bitmap[bidx] >> boff) & 1) ? 0xffff : 0x0000;
-			uint16_t *p  = img->px + (y * w + x) * 4;
+			uint16_t *p  = img->px + ((size_t)y * w + x) * 4;
 			p[0] = val; p[1] = val; p[2] = val; p[3] = 0xffff;
 		}
 	}
@@ -155,40 +155,42 @@ fp_save(const char *path, const FFImage *img)
 {
 	FILE *f;
 	uint32_t w, h, x, y;
-	int row_bytes;
+	size_t row_bytes;
 	uint8_t *bitmap;
 	uint32_t bw, bh;
+	int ok;
 
+	if (!img || !img->px || !ff_dimensions_valid(img->w, img->h)) return -1;
 	f = fopen(path, "wb");
 	if (!f) return -1;
 
 	w = img->w;
 	h = img->h;
-	row_bytes = (int)((w + 7) / 8);
+	row_bytes = ((size_t)w + 7) / 8;
 
 	bitmap = calloc((size_t)row_bytes * h, 1);
 	if (!bitmap) { fclose(f); return -1; }
 
 	for (y = 0; y < h; y++) {
 		for (x = 0; x < w; x++) {
-			const uint16_t *p = img->px + (y * w + x) * 4;
+			const uint16_t *p = img->px + ((size_t)y * w + x) * 4;
 			if (fp_pixel_is_white(p[0], p[1], p[2])) {
-				int bidx = (int)y * row_bytes + (int)(x / 8);
+				size_t bidx = (size_t)y * row_bytes + x / 8;
 				int boff = 7 - (int)(x % 8);
 				bitmap[bidx] |= (uint8_t)(1 << boff);
 			}
 		}
 	}
 
-	fwrite(FP_MAGIC, 1, 8, f);
+	ok = fwrite(FP_MAGIC, 1, 8, f) == 8;
 	bw = htonl(w);
 	bh = htonl(h);
-	fwrite(&bw, 4, 1, f);
-	fwrite(&bh, 4, 1, f);
-	fwrite(bitmap, 1, (size_t)row_bytes * h, f);
+	ok = ok && fwrite(&bw, 4, 1, f) == 1 &&
+	     fwrite(&bh, 4, 1, f) == 1 &&
+	     fwrite(bitmap, 1, row_bytes * h, f) == row_bytes * h;
 	free(bitmap);
-	fclose(f);
-	return 0;
+	if (fclose(f) != 0) ok = 0;
+	return ok ? 0 : -1;
 }
 
 /* fp_save_dithered — Floyd-Steinberg dither to 1-bit then write 1fpirate.
@@ -198,16 +200,18 @@ fp_save_dithered(const char *path, const FFImage *img)
 {
 	FILE     *f;
 	uint32_t  w, h, x, y, bw, bh;
-	int       row_bytes;
+	int       ok;
+	size_t    row_bytes;
 	uint8_t  *bitmap;
 	int32_t  *err;
 
+	if (!img || !img->px || !ff_dimensions_valid(img->w, img->h)) return -1;
 	f = fopen(path, "wb");
 	if (!f) return -1;
 
 	w = img->w;
 	h = img->h;
-	row_bytes = (int)((w + 7) / 8);
+	row_bytes = ((size_t)w + 7) / 8;
 
 	bitmap = calloc((size_t)row_bytes * h, 1);
 	err    = calloc((size_t)w * h, sizeof(int32_t));
@@ -216,17 +220,17 @@ fp_save_dithered(const char *path, const FFImage *img)
 	/* seed error buffer with luma (0–65535) */
 	for (y = 0; y < h; y++) {
 		for (x = 0; x < w; x++) {
-			const uint16_t *p = img->px + (y * w + x) * 4;
+			const uint16_t *p = img->px + ((size_t)y * w + x) * 4;
 			uint32_t luma = ((uint32_t)p[0] * 19595u
 			               + (uint32_t)p[1] * 38470u
 			               + (uint32_t)p[2] *  7471u) >> 16;
-			err[y * w + x] = (int32_t)luma;
+			err[(size_t)y * w + x] = (int32_t)luma;
 		}
 	}
 
 	for (y = 0; y < h; y++) {
 		for (x = 0; x < w; x++) {
-			int32_t v = err[y * w + x];
+			int32_t v = err[(size_t)y * w + x];
 			int     white;
 			int32_t e;
 			if (v < 0)      v = 0;
@@ -234,31 +238,31 @@ fp_save_dithered(const char *path, const FFImage *img)
 			white = (v >= 0x8000);
 			e     = v - (white ? (int32_t)0xffff : 0);
 			if (white) {
-				int bidx = (int)y * row_bytes + (int)(x / 8);
+				size_t bidx = (size_t)y * row_bytes + x / 8;
 				int boff = 7 - (int)(x % 8);
 				bitmap[bidx] |= (uint8_t)(1 << boff);
 			}
 			if (x + 1 < w)
-				err[y * w + (x + 1)]         += e * 7 / 16;
+				err[(size_t)y * w + (x + 1)]         += e * 7 / 16;
 			if (y + 1 < h) {
 				if (x > 0)
-					err[(y+1) * w + (x - 1)] += e * 3 / 16;
-				err[(y+1) * w + x]           += e * 5 / 16;
+					err[((size_t)y+1) * w + (x - 1)] += e * 3 / 16;
+				err[((size_t)y+1) * w + x]           += e * 5 / 16;
 				if (x + 1 < w)
-					err[(y+1) * w + (x + 1)] += e * 1 / 16;
+					err[((size_t)y+1) * w + (x + 1)] += e * 1 / 16;
 			}
 		}
 	}
 
-	fwrite(FP_MAGIC, 1, 8, f);
+	ok = fwrite(FP_MAGIC, 1, 8, f) == 8;
 	bw = htonl(w); bh = htonl(h);
-	fwrite(&bw, 4, 1, f);
-	fwrite(&bh, 4, 1, f);
-	fwrite(bitmap, 1, (size_t)row_bytes * h, f);
+	ok = ok && fwrite(&bw, 4, 1, f) == 1 &&
+	     fwrite(&bh, 4, 1, f) == 1 &&
+	     fwrite(bitmap, 1, row_bytes * h, f) == row_bytes * h;
 	free(bitmap);
 	free(err);
-	fclose(f);
-	return 0;
+	if (fclose(f) != 0) ok = 0;
+	return ok ? 0 : -1;
 }
 
 #endif /* ONEFIRATE_H */

@@ -1,23 +1,81 @@
 TODO
 ===============
 
-- Measure large canvases and many-layer documents using C99 and existing SDL
-  timing APIs only. Benchmark the clipped dirty-region compositor, then
-  optimize the remaining full-frame work in compositing and texture
-  conversion/upload without new libraries.
+Feature roadmap (after current polish, performance, and regression work)
+======================================================================
 
-- Add drag handles for resizing the active layer on the canvas. Keep the
-  numeric resize panel, preserve aspect-ratio/asymmetric resize behaviour as
-  intended, and make the whole operation one undoable action.
+Keep the editor small, fast, and simple. New features should earn their UI,
+memory, and maintenance cost and avoid mandatory heavyweight dependencies.
 
-- Add automated regression tests for farbfeld and 1fpirate round trips,
-  layer offsets and alpha compositing, crop/resize operations, and undo/redo.
-  Include malformed/truncated input cases.
+Next feature priorities, in order:
+- Basic colour adjustments: brightness/contrast, gamma, and saturation.
+  Preview on the active layer/selection and commit as one undo step.
+  Add levels later if these controls prove insufficient.
 
-- Fix the View menu's duplicate "Fit to Window" entries and define the
-  intended shortcuts. Make the fullscreen shortcut reachable and document
-  the final key bindings consistently.
+Additional useful gaps compared with GIMP/Photoshop:
+- Add/subtract selection and polygon lasso; grow/shrink selection next.
+  Feathering requires fractional mask coverage throughout affected tools.
+- Simple linear gradients: foreground-to-background and foreground-to-transparent.
+- Publish standard PNG clipboard data alongside application/x-wmdpaint.
+  Standard-image clipboard input already exists.
+- A small filter menu with blur and sharpen for active layer/selection.
 
-- Bring HACKING.txt and the user documentation up to date with the current
-  implementation, especially panning, undo/redo, the Help menu, and the
-  remaining resize limitation.
+Consider later:
+- Layer masks for reversible hiding/revealing. Account for compositing,
+  painting targets, transforms, undo, memory use, and project persistence
+  before implementation.
+
+Defer to preserve scope:
+- Adjustment-layer systems, smart objects, elaborate brush engines, vector
+  paths, plugin/scripting runtimes, AI tools, and full PSD/XCF compatibility.
+
+Completed polish:
+- View: 0 fits canvas to window; 1 shows actual size and resets panning.
+  Removed duplicate Fit command. Grid is Ctrl+F, lock Ctrl+L, fullscreen F11.
+
+Completed performance pass:
+- Added make bench using C99 and SDL timers, shared CPU rendering helpers,
+  transparent/opaque blend shortcuts, contiguous RGBA8 conversion, and
+  one render/upload per interpolated colour stroke segment.
+- Added scalar-equivalence, dirty-update, conversion, and real stroke tests.
+  Monochrome strokes retain per-stamp dither semantics.
+- Measurements and remaining profiling targets: doc/PERFORMANCE.md.
+
+Completed layer resize pass:
+- Resize (RSZ) and Move > Scale share four on-canvas corner handles.
+- Keep aspect ratio is on by default, with an on/off checkbox in both panels;
+  the Resize panel also links numeric width/height using the source ratio.
+- The opposite corner stays fixed. Previews resample the original raster;
+  near-handle clicks do not jump, and unchanged drags do not create undo.
+- Each drag is one undoable action; Escape cancels it. Canvas expansion is
+  deferred until release and is included in the same undo record.
+- Tests cover corners, ratio on/off, bounds, zoomed hit testing, undo/redo,
+  cancellation, canvas expansion, and switching layers before undo/redo.
+
+Completed regression and documentation pass:
+- Exact farbfeld/1fpirate wire bytes, round trips, row padding, truncation,
+  malformed dimensions, and buffered/immediate write failures are covered.
+- Crop, canvas extension/scaling, negative offsets, preserved pixels/properties,
+  and layer addition/deletion/reordering undo/redo now have headless coverage.
+- Fixed dimension/allocation overflow checks, format write-error reporting,
+  and negative layer-position rounding during canvas scaling.
+- Consolidated the user reference, refreshed development notes, synchronized
+  manuals, and replaced obsolete build-error reports with current limitations.
+
+Completed scaling choice:
+- Shared Nearest / Smooth control for Resize, Move > Scale, and Scale Canvas.
+- Smooth remains the default. Nearest copies original RGBA16 pixels exactly.
+- Sampling changes refresh drag previews without adding extra undo steps.
+- Tests cover pixel mapping, downscaling, identity, alpha, numeric sizing,
+  canvas scaling, preview switching, and undo/redo/cancel.
+
+Completed selection painting and larger brushes:
+- Brush (including image brushes), eraser, clone, airbrush, de-color, flood
+  fill, and shapes obey the active canvas-coordinate selection mask.
+- Flood fill checks its seed and cannot cross unselected pixels.
+- Built-in brush diameter raised from 64 to 1024 pixels (BRUSH_SIZE_MAX),
+  with a wider slider and an exact numeric field.
+- Tests cover holes/disconnected regions, layer offsets, colour/monochrome,
+  soft/spray/custom brushes, undo/redo, and oversized stamps on small layers.
+- Layer/canvas sizing limits raised to 65535 pixels (SCALE_SIZE_MAX); canvas
+  scaling prepares all allocations before applying any document changes.

@@ -1,30 +1,12 @@
-(linux)
+Current limitations
+===================
+- Clipboard output uses wmdpaint's private format; standard PNG output is planned.
+- 1fpirate cannot preserve colour or alpha. Enabling monochrome mode destroys
+  existing colours; undoing its toggle does not recover them.
+- Undo is bounded and in memory; large document snapshots can consume memory.
+- Allocation-failure handling across multi-layer operations needs further work.
+- The UI startup smoke test requires Xvfb and skips if it is unavailable.
 
-In file included from src/main.c:72:
-src/filebrowser.h: In fb_:
-src/filebrowser.h:52:28: DT_ undeclared (first use in this function)
-   52 |         if (ent->d_type == DT_DIR) {
-      |                            ^~~~~~
-src/filebrowser.h:52:28: note: each undeclared identifier is reported only once for each function it appears in
-src/main.c: In :
-src/main.c:2408:32: warning: comparison of  with boolean expression is always false [-Wbool-compare]
- 2408 |   if (SDL_Init(SDL_INIT_VIDEO) < 0)
-      |                                ^
-src/main.c:2411:13: error: too many arguments to SDL_; expected 4, have 6
- 2411 |   sdl_win = SDL_CreateWindow("wmdpaint",
-      |             ^~~~~~~~~~~~~~~~
-In file included from /usr/include/SDL3/SDL_dialog.h:43,
-                 from /usr/include/SDL3/SDL.h:44:
-/usr/include/SDL3/SDL_video.h:1184:42: note: declared here
- 1184 | extern SDL_DECLSPEC SDL_Window * SDLCALL SDL_CreateWindow(const char *title, int w, int h, SDL_WindowFlags flags);
-      |                                          ^~~~~~~~~~~~~~~~
-src/main.c:2435:22: error: implicit declaration of ; did you d_? [-Wimplicit-function-declaration]
- 2435 |   } else if (!isatty(fileno(stdin))) {
-      |                      ^~~~~~
-      |                      d_fileno
-src/main.c:2494:34: SDL_ has no member 
- 2494 |         SDL_Keycode sym = evt.key.keysym.sym;
-      |                                  ^
-src/main.c:2615:33: error: implicit declaration of SDL_BUTTON_renamed_SDL_BUTTON_ [-Wimplicit-function-declaration]
- 2615 |       lmb_down     = (mb      & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
-      |                MASKfunction keysymnamed KeyboardEventerror: filenomean filenofunction CreateWindowfunction 0constant mainfunction DIRerror: scanfunction 
+Feature priorities and deferred scope are maintained in TODO.txt.
+The historical SDL3 build errors previously listed here have been superseded
+by the compatibility wrappers and current build checks.

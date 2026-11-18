@@ -11,3 +11,12 @@ core
 
 # Local assistant/editor settings
 .claude/settings.local.json
+# Test and benchmark executables
+tests/test_wmdarchive
+tests/test_canvas_render
+tests/bench_canvas
+tests/test_paint_stroke
+tests/test_layer_resize
+
+/tests/test_image_formats
+/tests/test_document_ops

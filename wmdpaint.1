@@ -1,522 +1,196 @@
-.Dd April 24, 2026
+.Dd October 11, 2026
 .Dt WMDPAINT 1
 .Os
 .Sh NAME
 .Nm wmdpaint
-.Nd weapons of mass drawing \(em a suckless-style raster paint program
+.Nd small raster editor with native farbfeld support
 .Sh SYNOPSIS
 .Nm
 .Op Ar file
 .Sh DESCRIPTION
 .Nm
-is a raster paint program built in the suckless spirit.
-It provides layers, 16-bit colour depth, multiple drawing tools,
-and direct support for the
-.Xr farbfeld 5
-and 1fpirate image formats.
-The interface is built with the Nuklear immediate-mode GUI toolkit
-on top of SDL and runs on X11, Wayland, and macOS without modification.
+is a C99 raster editor using Nuklear and SDL3 by default,
+with an SDL2 compatibility build.
+It keeps colour and alpha as 16-bit RGBA and provides independent layers,
+drawing tools, selections, transforms, and bounded undo/redo.
+Configuration is compiled in; there are no command-line options or runtime
+configuration files.
 .Pp
-If
-.Ar file
-is given on the command line,
-.Nm
-opens it on startup.
-Supported input formats are farbfeld
-.Pq .ff ,
-1fpirate
-.Pq .1fpirate ,
-and any format supported by stb_image
-.Pq PNG, JPEG, BMP, TGA, and others .
-If standard input is not a terminal,
-.Nm
-reads a farbfeld image from stdin instead.
-.Pp
-All configuration is compile-time; see
-.Sx CONFIGURATION
-below.
-There are no command-line flags and no runtime config files.
-.Sh TOOLS
-Tools are selected from the vertical panel on the left edge of the window.
-The active tool is highlighted in blue.
-.Bl -tag -width "AIRBRUSH"
-.It Sy SEL
-Rectangle select.
-Click and drag on the canvas to define a selection rectangle.
-The selection can be copied, cut, or used as a source for other operations.
-.It Sy BRS
-Brush.
-Click and drag to paint freehand with the current foreground colour.
-Brush size, shape
-.Pq square or circle ,
-and mode
-.Pq pencil hard-edge or soft feathered
-are set in the brush options panel.
-.It Sy ERA
-Eraser.
-Paints fully transparent pixels on the active layer,
-using the same size and shape settings as the brush.
-.It Sy CLN
-Area copypasta.
-.Cm Ctrl Ns \(pl Ns click
-or right-click on the canvas to set the source point.
-Then click and drag to copy pixels from the stable offset source region
-onto the active layer at the brush position.
-.It Sy AIR
-Airbrush.
-Two modes are available:
-.Cm Spray
-scatters pixels randomly within the brush radius,
-and
-.Cm Soft
-builds up translucent coverage using a Gaussian weight.
-Flow density is controlled with a slider in the airbrush panel.
-.It Sy DEC
-De-color brush.
-Paints the RGB channels of nontransparent pixels black while preserving their
-alpha exactly.  Use it to remove coloured background halos from antialiased
-edges after background removal.  Fully transparent pixels are not changed.
-.It Sy LIN
-Shape multitool.
-Click and drag to draw a line, filled rectangle, or circle.
-The shape type is selected in the shape panel.
-The shape is committed to the active layer on mouse release.
-.It Sy BKT
-Flood fill.
-Click on the canvas to fill a connected region of the same colour
-on the active layer with the current foreground colour.
-Uses a breadth-first search.
-.It Sy TXT
-Text tool.
-Click on the canvas to place a new text layer at that position.
-Type to enter text; press
-.Cm Backspace
-to delete the last character,
-.Cm Return
-to insert a newline, and
-.Cm Escape
-to commit the text and stop capturing keyboard input.
-Font, size, and a live character count are shown in the text panel.
-Use the mouse to select a font from the list, or press
-.Cm Up Ns / Ns Cm Down
-to step through fonts while the text tool is active.
-Disabled at build time when
-.Dv NOTTF
-is set to 1.
-.It Sy EYE
-Eyedropper.
-Click on any point in the canvas to sample the composited colour at that pixel
-and set it as the current foreground colour.
-Automatically switches back to the brush tool after sampling.
-.It Sy MOV
-Move layer.
-Click and drag to reposition the active layer within the canvas.
-Arrow keys nudge the layer by one pixel;
-hold
-.Cm Shift
-for ten-pixel steps.
-.It Sy RSZ
-Resize.
-Scales the active layer by clicking and dragging on the canvas.
-Dragging down and to the right expands the layer;
-dragging up or to the left contracts it.
-Bilinear resampling is used; downscaling is destructive by default.
-.It Sy Transform cancel
-Press Escape during a move, rotate, scale, or perspective drag to restore the
-layer to its state before that drag.
-.El
-.Sh MENUS
-.Ss File
-.Bl -tag -width "Save As..."
-.It Sy New
-Discard the current document and create a blank canvas at the default dimensions
-.Pq see Dv DEFAULT_W No and Dv DEFAULT_H .
-.It Sy Create...
-Open a dialog to specify exact dimensions for a new blank canvas.
-.It Sy Open...
-Open a file browser to load an image.
-.It Sy "Open as Layers..."
-Open an image as a new layer above the active layer.
-.It Sy Save
-Save the current document to its existing path in farbfeld or 1fpirate format.
-If the file has not been saved before,
-behaves as
-.Sy Save As .
-.It Sy Save As...
-Open a file browser to choose a path and save in farbfeld or 1fpirate format.
-.It Sy Export...
-.Pq Requires Dv SUCK_MORE Ns =1 at build time.
-Save the composited image in PNG, JPEG, BMP, or TGA format
-using stb_image_write.
-Format is determined by the file extension.
-.It Sy Exit
-Quit
-.Nm .
-.El
-.Ss Image
-.Bl -tag -width "Flatten Image"
-.It Sy Info
-Display a popup showing the current canvas dimensions and pixel format.
-.It Sy "[ ] 1fpirate Mode"
-Convert all layers to dithered 1-bit black and white, then keep edits in that
-form while the mode is enabled.
-Turn the mode off to resume normal colour painting on top of the resulting
-line art.
-When
-.Dv COWARD_MODE
-is enabled, turning this on warns before destroying colours; undoing the mode
-toggle will not restore them.
-.It Sy "Flatten Image"
-Composite all visible layers into a single background layer.
-.It Sy Resize...
-Scale the entire canvas and all layers to new dimensions.
-.It Sy Crop Canvas
-Activate crop mode.
-Click and drag a rectangle on the canvas; on mouse release the canvas is
-cropped to that region and all layers are clipped accordingly.
-Press
-.Cm Escape
-to cancel without cropping.
-.El
-.Ss Edit
-.Bl -tag -width "Undo        Ctrl+Z"
-.It Sy "Undo        Ctrl+Z"
-Restore the document to an earlier state.  Up to
-.Dv UNDO_LEVELS
-states are retained.
-.It Sy Copy
-Copy the pixels within the current selection rectangle from the composited
-canvas to the internal clipboard.
-.It Sy Cut
-Copy the selection to the clipboard and erase the corresponding pixels
-on the active layer.
-.It Sy Paste
-Insert the clipboard contents as a new layer above the current active layer
-and switch to the Move tool for immediate repositioning.
-.El
-.Ss Layers
-.Bl -tag -width "Merge Layer Down"
-.It Sy "[ ] Expand on flatten"
-Toggle whether compositing expands the canvas to contain all layer extents.
-When off (default), pixels outside the canvas bounds are silently clipped.
-.It Sy "Merge Layer Down"
-Composite the active layer into the layer below it and remove the active layer.
-Does nothing when the active layer is the bottom layer.
-.It Sy "Resize Layer..."
-Scale the active layer independently of the canvas.
-.El
-.Ss Colors
-.Bl -tag -width "Color Picker"
-.It Sy "Color Picker"
-Open a floating colour picker panel to set the foreground colour.
-The colour swatch in the tool panel also opens this picker.
-.El
-.Sh KEYBOARD SHORTCUTS
-.Bl -column "Ctrl + drag" "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-.It Sy Key Ta Sy Action
-.It Li +  No or  Li = Ta Zoom in
-.It Li \- Ta Zoom out
-.It Li Ctrl Ns \(pl Ns Li Q Ta Quit
-.It Li Ctrl Ns \(pl Ns Li S Ta Save
-.It Li Ctrl Ns \(pl Ns Li Shift Ns \(pl Ns Li S Ta Save As
-.It Li Ctrl Ns \(pl Ns Li Z Ta Undo last drawing operation
-.It Li Ctrl Ns \(pl Ns Li Y Ta Redo last undone operation
-.It Li Ctrl Ns \(pl Ns Li C Ta Copy selection
-.It Li Ctrl Ns \(pl Ns Li X Ta Cut selection
-.It Li Ctrl Ns \(pl Ns Li V Ta Paste clipboard as a new layer
-.It Li Ctrl Ns \(pl Ns Li A Ta Select the entire canvas
-.It Li Ctrl Ns \(pl Ns Li D Ta Clear the selection
-.It Li Shift Ns \(pl Ns Li Backspace Ta Fill the selection
-.It Li Delete No or Ns Li Backspace Ta Delete the selection
-.It Li Ctrl Ns \(pl Ns Li drag Ta Pan the canvas view
-.It Li 0 Ta Fit canvas to window
-.It Li 1 Ta Fit canvas to window at the alternate layout
-.It Li Ctrl Ns \(pl Ns Li F Ta Toggle the pixel grid
-.It Li Ctrl Ns \(pl Ns Li L Ta Toggle canvas lock
-.It Li Escape Ta Cancel an active transform or close a tool popup
-.It Li F11 Ta Toggle fullscreen
-.It Li Up No / Ns Li Down No / Ns Li Left No / Ns Li Right Ta Nudge active layer by 1 pixel
-.Pq Move tool only
-.It Li Shift Ns \(pl Ns Li Arrow Ta Nudge active layer by 10 pixels
-.Pq Move tool only
-.It Li Up No / Ns Li Down Ta Step through font list
-.Pq Text tool only
-.It Li Backspace Ta Delete last character
-.Pq Text tool, while typing
-.It Li Return Ta Insert newline
-.Pq Text tool, while typing
-.It Li Escape Ta Commit text and stop typing
-.Pq Text tool, while typing
-.El
-.Sh MOUSE
-.Bl -tag -width "Ctrl+click (Area copypasta)"
-.It Sy "Left drag"
-Draw with the active tool.
-.It Sy "Ctrl + left drag"
-Pan the canvas except when Area copypasta is active.
-.It Sy "Ctrl + click (Area copypasta)"
-Set the area copypasta source point.
-.It Sy "Right click (Area copypasta)"
-Set the area copypasta source point.
-Subsequent clicks and drags paint from the offset position.
-.It Sy "Scroll wheel"
-Zoom in and out on the canvas.
-.El
-.Sh FILE FORMATS
-.Bl -tag -width ".1fpirate"
-.It Pa .ff
-Farbfeld: 16 bits per channel RGBA, big-endian.
-Eight-byte magic
-.Dq farbfeld ,
-followed by big-endian uint32 width and height,
-then width\(timens height\(timens 4 uint16 values in RGBA order.
-This is the primary native format and preserves full colour depth.
-Files written by
-.Nm
-use this specification without private chunks, alternate channel ordering,
-or reduced channel depth.
-Loader bounds checks may reject dimensions that cannot be represented safely
-in memory, but do not define a different on-disk format.
-See
-.Lk https://tools.suckless.org/farbfeld/
-for the specification and associated conversion tools.
-.It Pa .1fpirate
-1fpirate: 1-bit sibling of farbfeld for monochrome drawings.
-Eight-byte magic
-.Dq 1fpirate ,
-big-endian uint32 width and height,
-then packed rows of 1-bit pixels, MSB first, each row padded to a byte boundary.
-Bit value 1 encodes white; 0 encodes black.
-Colour images saved to this format are quantised to 1-bit
-using BT.601 luminance thresholding.
-.It Pa .png , .jpg , .bmp , .tga , No and others
-Loaded via stb_image (any format it supports).
-Saved via stb_image_write only when
-.Dv SUCK_MORE
-is set to 1 at build time.
-Purists are encouraged to use the farbfeld conversion tools
-.Pq ff2png , png2ff , etc.\&
-from the farbfeld distribution instead.
-.El
-.Sh LAYERS
-Layers are pixel buffers with independent positions on the canvas.
-Up to
-.Dv MAX_LAYERS
-layers may exist simultaneously (default 32).
-.Pp
-The layer panel on the right side of the window lists all layers
-from top to bottom.
-Each layer row provides:
-.Pp
-.Bl -bullet -compact
-.It
-A visibility checkbox
-.It
-The layer name (click to make it the active layer)
-.It
-A thumbnail preview and an editable name field
-.It
-Up and down reorder arrows
-.It
-A delete button (hidden when only one layer remains)
-.El
-.Pp
-The active layer receives all drawing operations.
-Layers are alpha-composited in stack order (index 0 at the bottom)
-using the standard Porter-Duff
-.Dq over
-operation.
-The composited result is what is displayed, copied, and saved.
-.Pp
-Layers may extend beyond the canvas bounds;
-when
-.Sy Expand on flatten
-is enabled in the Layers menu,
-compositing grows the canvas to cover all visible layer extents.
-.Sh CONFIGURATION
-.Nm
-has no runtime configuration.
-All tunables live in
-.Pa src/config.h
-and take effect after a recompile.
-.Bl -tag -width "CHECKER_LIGHT"
-.It Dv WIN_W , WIN_H
-Initial window dimensions in pixels.
-Default: 900\(mu650.
-.It Dv DEFAULT_W , DEFAULT_H
-Dimensions of a blank canvas created with
-.Sy File \(-> New .
-Default: 512\(mu512.
-.It Dv MAX_LAYERS
-Maximum number of layers in the stack.
-Default: 32.
-.It Dv BG_R , BG_G , BG_B
-Canvas background colour (the area surrounding the image).
-Default: dark grey (30, 30, 30).
-.It Dv CHECKER_SIZE
-Size in screen pixels of each square in the transparency checkerboard.
-Default: 16.
-.It Dv CHECKER_LIGHT , CHECKER_DARK
-The two checkerboard colours as 8-bit values (0\(en255).
-Defaults: 255 (white) and 192 (light grey).
-.It Dv LAYER_PANEL_W
-Width of the right-side layer panel.
-Default: 200.
-.It Dv COWARD_MODE
-Set to
-.Li 1
-to enable confirmation dialogs on
-.Sy New
-and
-.Sy Exit ,
-and a warning before saving a colour image to 1fpirate
-.Pq which quantises to 1-bit .
-Default: 0.
-.It Dv SUCK_MORE
-Set to
-.Li 1
-to enable the
-.Sy Export
-menu item for writing PNG, JPEG, BMP, and TGA files via stb_image_write.
-Default: 0.
-.It Dv NOTTF
-Set to
-.Li 1
-to disable the text tool entirely,
-for example when stb_truetype.h is not available.
-Default: 0.
-.It Dv WMD_SDL_VERSION
-SDL backend version.
-.Li 3
-selects SDL3 (default);
-.Li 2
-selects SDL2 as a legacy fallback.
-.El
-.Sh BUILDING
-.Bd -literal -offset indent
-make         # build ./wmdpaint
-make clean
-.Ed
-.Pp
-Runtime dependency:
-.Sy libSDL2
-or
-.Sy libSDL3 ,
-depending on
-.Dv WMD_SDL_VERSION .
-The vendored headers and generated asset headers required by the default build
-are already present; no dependency-fetch step is required.
-.Pp
-Embedded assets in
-.Pa src/icons_data.h
-and
-.Pa src/logo_data.h
-are generated automatically from
-.Pa data/icons.1fpirate
-and
-.Pa data/wmdlogo.png
-by the Makefile.
-To update the icons or logo, replace the file in
-.Pa data/
-and run
-.Cm make .
-.Sh ENVIRONMENT
-.Bl -tag -width "HOME"
-.It Ev HOME
-Used to locate per-user font directories
-.Pq Pa ~/.fonts , ~/.local/share/fonts , ~/Library/Fonts .
-.El
-.Sh FILES
-.Bl -tag -width "data/icons.1fpirate"
-.It Pa src/config.h
-Compile-time configuration.
-.It Pa data/icons.1fpirate
-Tool icon sprite sheet source image (128\(mu32, 1-bit).
-Embedded into the binary at build time; the
-.Pa data/
-directory is not required at runtime.
-.It Pa data/wmdlogo.png
-Application logo source image.
-Likewise embedded at build time.
-.It Pa data/fonts/
-Bundled TrueType fonts shipped with the source.
-These are scanned at startup when the text tool is first used,
-alongside system font directories:
-.Pp
-.Bl -bullet -compact
-.It
-.Pa /usr/share/fonts/truetype ,
-.Pa /usr/share/fonts/TTF ,
-.Pa /usr/share/fonts
-.Pq Linux
-.It
-.Pa /usr/X11R6/lib/X11/fonts/TTF ,
-.Pa /usr/X11R6/lib/X11/fonts/truetype
-.Pq OpenBSD
-.It
-.Pa /usr/local/share/fonts ,
-.Pa /usr/local/share/fonts/TTF ,
-.Pa /usr/local/share/fonts/truetype
-.Pq BSD ports / pkgsrc
-.It
-.Pa /System/Library/Fonts ,
-.Pa /Library/Fonts ,
-.Pa ~/Library/Fonts
-.Pq macOS
-.It
-.Pa ~/.fonts ,
-.Pa ~/.local/share/fonts
-.Pq XDG / Linux user fonts
-.El
-.El
-.Sh EXAMPLES
-Open a farbfeld file:
-.Dl wmdpaint image.ff
-.Pp
-Open a PNG:
-.Dl wmdpaint photo.png
-.Pp
-Pipe a farbfeld image from another tool:
-.Dl cat image.ff | wmdpaint
-.Pp
-Convert a PNG to farbfeld using the farbfeld tools and open it:
-.Dl png2ff < photo.png > photo.ff && wmdpaint photo.ff
-.Sh SEE ALSO
-.Xr ff2png 1 ,
-.Xr png2ff 1 ,
-.Xr xxd 1 ,
-.Xr farbfeld 5
-.Sh AUTHORS
-.Nm
-was written by
-.An Tim Cooper Aq Mt timcooperlabs@gmail.com .
-.Sh CAVEATS
-Undo history is bounded by
-.Dv UNDO_LEVELS
-(32 by default) and is kept in memory only.
-Saving an ordinary image format writes the composited image; use a
+The optional file is opened at startup.
+When standard input is a pipe, a farbfeld stream is read from it.
+Input includes farbfeld, 1fpirate, layered projects, and stb_image formats
+such as PNG, JPEG, BMP, and TGA.
+.Sh FILES AND SAVING
+File provides New, Create, Open, Open as Layers, and Open in New Window.
+Save and Save As use the destination format.
+A
 .Pa .wmd
 or
 .Pa .wmd.bz2
-path when layer structure must be preserved.
+path preserves the layered document.
+An ordinary image path saves the composited image.
+Farbfeld preserves the full 16-bit RGBA representation.
 .Pp
-The
-.Sy Export
-menu item
-.Pq File \(-> Export
-is hidden unless the program is built with
+Make Layered Archive is an explicit project save command.
+Archives contain a manifest, standard image entries for layers, and a merged
+farbfeld image.
+Compression uses external bzip2; if unavailable, an
+uncompressed project is retained and the fallback is reported.
+.Pp
+Conventional PNG, JPEG, BMP, and TGA export requires
 .Dv SUCK_MORE Ns =1 .
+Export as 1fpirate reduces colour to black and white and loses transparency.
+Failed saves report an error and keep the document marked modified.
+.Sh TOOLS
+The tool strip provides selection, brush, eraser, clone, airbrush, de-color,
+shapes, bucket fill, text, eyedropper, move, resize, and crop.
+Floating panels hold tool options.
+Built-in brushes support diameters from 1 to 1024 pixels, with a wider size
+slider and an exact numeric field in the color picker.
+.Dv BRUSH_SIZE_MAX
+controls the maximum; custom image brushes retain their native size.
 .Pp
-Font scanning is performed once, the first time the text tool is activated.
-If no TrueType fonts are found, the text tool uses an embedded 8x16 bitmap
-font. Fonts installed after
-.Nm
-has started will not appear without a restart.
+Selection supports rectangles, ellipses, colour selection, and magic wand.
+Select provides All, None, Invert, Float, Fill, and Delete.
+Copy uses composited pixels, Cut removes pixels from the active layer,
+and Paste creates a layer.
+Brush, eraser, clone, airbrush, de-color, fill, and shapes obey the active
+selection mask, including holes and offset layers.
+Without a selection,
+painting is unrestricted.
+Flood fill stays in the connected selected region.
 .Pp
-Saving a colour image to 1fpirate format is lossy:
-all colours are quantised to black or white using BT.601 luminance thresholding.
-Enable
-.Dv COWARD_MODE
-in
+Clone uses Ctrl+click or right-click to set the source.
+De-color paints nontransparent RGB black without changing alpha.
+Text creates a text layer; Escape commits text and stops typing.
+An embedded bitmap font is used when no TrueType fonts are found.
+.Dv NOTTF Ns =1
+removes the text tool.
+.Pp
+Move offers translation, rotation, scaling, and perspective transforms.
+Escape cancels an active transform.
+Resize and Move > Scale share four yellow corner handles.
+The opposite corner stays fixed; Keep aspect ratio is on by default.
+Turn it off for independent width and height changes.
+The Resize panel links numeric dimensions and offers Layer and Canvas buttons.
+Panels can be moved to expose handles.
+Each drag is one undo action; previews sample the original raster.
+Nearest copies source pixels exactly; Smooth uses bilinear interpolation
+and is the default.
+This shared choice is available in Resize, Move > Scale,
+and Image > Scale Canvas.
+.Sh CANVAS AND LAYERS
+Layer and canvas sizing controls allow dimensions up to 65535 pixels,
+configured by
+.Dv SCALE_SIZE_MAX .
+Image > Resize Canvas changes bounds without scaling layer pixels.
+Scale Canvas scales the document and its layers.
+Crop Canvas crops to the current selection bounds and discards outside pixels;
+the crop tool also accepts a dragged crop rectangle.
+Fit Canvas to Layers grows the canvas to cover layer extents.
+.Pp
+The layer panel controls the active layer, visibility, opacity, alpha lock,
+blend mode, name, and ordering.
+Layer provides creation, duplication, deletion, reordering, merge, flatten,
+flips, quarter-turn rotation, resizing, crop, and expansion commands.
+Normal, Multiply, Screen, and Overlay blend modes are available.
+.Pp
+Layers may extend outside the canvas.
+Expand on flatten allows compositing to enlarge the canvas for layer extents;
+it is off by default.
+.Pp
+Colors provides colour and brush selection, greyscale, 1-bit conversion,
+and inversion.
+Enabling 1fpirate Mode destructively dithers existing colours.
+Turning it off permits colour painting again; undoing the toggle does not
+recover the original colours.
+Help > About displays application information.
+.Sh NAVIGATION AND SHORTCUTS
+.Bl -tag -width "Ctrl+Shift+S"
+.It Li Ctrl+S / Ctrl+Shift+S
+Save / Save As.
+.It Li Ctrl+Q
+Exit.
+.It Li Ctrl+Z / Ctrl+Y
+Undo / Redo.
+.It Li Ctrl+C / Ctrl+X / Ctrl+V
+Copy / Cut / Paste.
+.It Li Ctrl+A / Ctrl+D
+Select all / Clear selection.
+.It Li Shift+Backspace / Delete
+Fill / Delete selection.
+.It Li + No or Li = / -
+Zoom in / out.
+.It Li 0 / 1
+Fit to window / Actual size; both reset panning.
+.It Li Ctrl+F
+Toggle pixel grid.
+.It Li Ctrl+L
+Toggle canvas lock (viewer mode).
+.It Li F11
+Toggle fullscreen.
+.It Li Arrow / Shift+Arrow
+Nudge with Move by one / ten pixels.
+.It Li Escape
+Cancel an active transform or close a popup.
+.El
+.Pp
+Pan with middle-button drag or Ctrl+left drag, except when cloning.
+The scroll wheel zooms around the pointer.
+.Sh FORMATS
+Farbfeld consists of eight bytes containing
+.Dq farbfeld ,
+big-endian unsigned 32-bit width and height, and row-major RGBA pixels,
+with each channel a big-endian unsigned 16-bit value.
+No private extensions or reduced-depth variants are written.
+Dimensions that cannot be represented safely by the editor are rejected.
+.Pp
+1fpirate uses the magic
+.Dq 1fpirate ,
+the same dimension header, and MSB-first packed rows padded to byte boundaries.
+One means white, zero means black.
+Decoded pixels are opaque.
+.Sh CONFIGURATION
+Edit
+.Pa src/config.h
+for SDL/renderer/window settings and
 .Pa src/config_paint.h
-to receive a warning before this conversion occurs.
+for paint settings, then rebuild.
+Important switches include
+.Dv WMD_SDL_VERSION , MAX_LAYERS , UNDO_LEVELS , COWARD_MODE ,
+.Dv SUCK_MORE , NOTTF , TOOL_ON_TOP ,
+and
+.Dv VULKANTARD_MODE .
+.Pp
+New, Open, and Exit do not ask for confirmation by default.
+Enable
+.Dv COWARD_MODE Ns =1
+for confirmation dialogs.
+Undo history is bounded by
+.Dv UNDO_LEVELS
+and retained only in memory.
+.Sh BUILDING
+.Bd -literal -offset indent
+make
+make test
+make check-config
+make ui-test
+make bench
+.Ed
+.Pp
+A C99 compiler, make, and SDL development files are required.
+Vendor and generated asset headers are checked in; no fetch step is needed.
+Regression tests run without a display.
+The UI smoke check requires Xvfb
+and skips when unavailable.
+Configuration checks build confirmation-enabled
+and text-disabled variants.
+.Sh SEE ALSO
+.Xr ff2png 1 ,
+.Xr png2ff 1 ,
+.Xr farbfeld 5
+.Pp
+The repository includes README.md, doc/wmdpaint.md, doc/HACKING.txt,
+doc/PROJECT_FORMAT.md, and doc/PERFORMANCE.md.
+.Sh AUTHORS
+.An Tim Cooper Aq Mt timcooperlabs@gmail.com

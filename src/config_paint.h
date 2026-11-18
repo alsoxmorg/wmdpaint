@@ -44,6 +44,12 @@
 /* maximum number of layers */
 #define MAX_LAYERS      32
 
+/* maximum dimension offered by layer/canvas sizing controls */
+#define SCALE_SIZE_MAX 65535
+
+/* largest built-in brush diameter, in pixels */
+#define BRUSH_SIZE_MAX 1024
+
 /* in-memory undo steps; history is never saved with the document */
 #define UNDO_LEVELS     32
 
