@@ -12,6 +12,17 @@ make bench
 make test
 ```
 
+For a real application run, enable the opt-in telemetry with:
+
+```sh
+WMDPAINT_PERF=1 ./wmdpaint large-image.ff
+```
+
+The application reports image decode/load time, estimated RGBA16 pixel
+storage, peak resident memory, frame time, and canvas-composite time once per
+second.  The setting is intentionally environment-controlled so normal runs
+do not add logging or timing work.
+
 `bench` measures 3072×2048 canvases with four full-sized layers and
 2048×2048 canvases with sixteen full-sized layers. Each case reports full
 updates and 64×64 dirty updates, separating compositing, 16-bit-to-8-bit
@@ -35,6 +46,11 @@ machine with enough memory; swapping and concurrent work distort timings.
 These are elapsed measurements, not pass/fail performance assertions.
 
 ## Changes
+
+- Large image and layer loads transfer the decoder-owned RGBA16 pixel buffer
+  directly into the layer instead of allocating a second full-size layer and
+  copying every pixel.  This lowers peak memory during open/import while
+  preserving the separate composited canvas.
 
 - Skip layers at zero opacity.
 - Specialize Normal layers at full opacity once per layer: skip transparent

@@ -41,6 +41,18 @@ Completed performance pass:
   Monochrome strokes retain per-stamp dither semantics.
 - Measurements and remaining profiling targets: doc/PERFORMANCE.md.
 
+Performance follow-up — Phase 1/2 complete, Phase 3 ready:
+- Run `WMDPAINT_PERF=1 ./wmdpaint path/to/large-file.ff` on a real problem file.
+- Draw for several seconds and save the `wmdpaint perf:` lines, especially
+  frame max, composite max, composite count, and max RSS.
+- Repeat with one large opaque layer, many normal layers, and translucent or
+  non-Normal blend layers when possible.
+- Phase 2 now transfers decoder-owned RGBA16 pixels directly into imported
+  layers, avoiding one full-size allocation/copy during load.
+- Proceed to Phase 3 after collecting those measurements: batch frame work,
+  restrict layer-move recomposition to old/new bounds, and add large-layer
+  preview behavior if the traces show full-frame work during interaction.
+
 Completed layer resize pass:
 - Resize (RSZ) and Move > Scale share four on-canvas corner handles.
 - Keep aspect ratio is on by default, with an on/off checkbox in both panels;

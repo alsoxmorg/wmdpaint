@@ -10,6 +10,7 @@
 #include <poll.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 
 /* SDL — must come before nuklear_sdl_renderer.h so the renderer finds it.
  * sdl_wmd.h selects SDL2 or SDL3 and provides WMD_* compatibility wrappers. */
@@ -129,6 +130,91 @@ static int      stdout_is_pipe = 0;
 static char     archive_message[512];
 static char     io_error[512];
 static int      pirate_mode = 0;
+
+/* Opt-in performance telemetry.  Set WMDPAINT_PERF=1 when diagnosing large
+ * documents; normal runs stay completely quiet. */
+static int      perf_enabled = -1;
+static uint64_t perf_comp_ticks, perf_comp_max;
+static uint64_t perf_comp_count;
+static uint64_t perf_frame_ticks, perf_frame_max;
+static uint64_t perf_frame_count, perf_report_ticks;
+
+static int
+perf_is_enabled(void)
+{
+  if (perf_enabled < 0) {
+    const char *s = getenv("WMDPAINT_PERF");
+    perf_enabled = s && s[0] && strcmp(s, "0") != 0;
+  }
+  return perf_enabled;
+}
+
+static double
+perf_ms(uint64_t ticks)
+{
+  return (double)ticks * 1000.0 /
+         (double)SDL_GetPerformanceFrequency();
+}
+
+static size_t
+perf_rss_kib(void)
+{
+  struct rusage ru;
+  if (getrusage(RUSAGE_SELF, &ru) != 0) return 0;
+#if defined(__APPLE__)
+  return (size_t)ru.ru_maxrss / 1024u;
+#else
+  return (size_t)ru.ru_maxrss;
+#endif
+}
+
+static void
+perf_log_load(const char *path, uint32_t w, uint32_t h,
+              uint64_t started, uint64_t decoded)
+{
+  if (!perf_is_enabled()) return;
+  fprintf(stderr,
+          "wmdpaint perf: load %s %ux%u decode=%.1f ms total=%.1f ms "
+          "rgba16=%.1f MiB maxrss=%.1f MiB\n",
+          path ? path : "<stdin>", w, h,
+          perf_ms(decoded - started), perf_ms(SDL_GetPerformanceCounter() - started),
+          (double)((size_t)w * h * 8) / (1024.0 * 1024.0),
+          (double)perf_rss_kib() / 1024.0);
+}
+
+static void
+perf_frame_begin(uint64_t *started)
+{
+  if (perf_is_enabled()) *started = SDL_GetPerformanceCounter();
+  else                  *started = 0;
+}
+
+static void
+perf_frame_end(uint64_t started)
+{
+  uint64_t now;
+  if (!perf_is_enabled() || !started) return;
+  now = SDL_GetPerformanceCounter();
+  perf_frame_ticks += now - started;
+  if (now - started > perf_frame_max) perf_frame_max = now - started;
+  perf_frame_count++;
+  if (!perf_report_ticks) perf_report_ticks = now;
+  if (now - perf_report_ticks >= SDL_GetPerformanceFrequency()) {
+    fprintf(stderr,
+            "wmdpaint perf: frames=%llu avg=%.2f ms max=%.2f ms "
+            "composites=%llu avg=%.2f ms max=%.2f ms rss=%.1f MiB\n",
+            (unsigned long long)perf_frame_count,
+            perf_frame_count ? perf_ms(perf_frame_ticks / perf_frame_count) : 0.0,
+            perf_ms(perf_frame_max),
+            (unsigned long long)perf_comp_count,
+            perf_comp_count ? perf_ms(perf_comp_ticks / perf_comp_count) : 0.0,
+            perf_ms(perf_comp_max),
+            (double)perf_rss_kib() / 1024.0);
+    perf_frame_ticks = perf_frame_max = perf_frame_count = 0;
+    perf_comp_ticks = perf_comp_max = perf_comp_count = 0;
+    perf_report_ticks = now;
+  }
+}
 #if COWARD_MODE
 static int      confirm_exit = 0;
 #endif
@@ -2903,6 +2989,7 @@ static void
 canvas_composite(void)
 {
   int i;
+  uint64_t perf_started = perf_is_enabled() ? SDL_GetPerformanceCounter() : 0;
   if (!canvas) return;
   if (composite_deferred) {
     composite_pending = 1;
@@ -2951,6 +3038,12 @@ canvas_composite(void)
   }
 
   canvas_image_rebuild();
+  if (perf_started) {
+    uint64_t elapsed = SDL_GetPerformanceCounter() - perf_started;
+    perf_comp_ticks += elapsed;
+    if (elapsed > perf_comp_max) perf_comp_max = elapsed;
+    perf_comp_count++;
+  }
 }
 
 /* bilinear scale a uint16_t RGBA pixel buffer to new dimensions */
@@ -3357,23 +3450,46 @@ layers_clear(void)
 }
 
 /* shared setup: take ownership of img, set path (NULL = stdin) */
+static Layer *
+layer_take_image(FFImage *img)
+{
+  Layer *l;
+  if (!img || !img->px) return NULL;
+  l = malloc(sizeof *l);
+  if (!l) return NULL;
+  l->px = img->px;
+  img->px = NULL;
+  l->x = l->y = 0;
+  l->w = img->w;
+  l->h = img->h;
+  l->name[0] = '\0';
+  l->visible = 1;
+  l->opacity = 1.0f;
+  l->alpha_lock = 0;
+  l->blend_mode = LAYER_BLEND_NORMAL;
+  free(img);
+  return l;
+}
+
 static void
 load_img(FFImage *img, const char *path)
 {
+  Layer *background;
   layers_clear();
   sel_clear();
   ff_free(canvas);
   canvas = ff_new(img->w, img->h);
   if (!canvas) { ff_free(img); die("out of memory"); }
 
-  layers[0] = layer_new(img->w, img->h);
-  if (!layers[0]) { ff_free(img); die("out of memory"); }
-  memcpy(layers[0]->px, img->px,
-	 (size_t)img->w * img->h * 4 * sizeof(uint16_t));
+  /* The decoder already owns a complete RGBA16 image.  Transfer that buffer
+   * into the first layer instead of allocating a second full-size layer and
+   * copying every pixel before freeing the decoder image. */
+  background = layer_take_image(img);
+  if (!background) { ff_free(img); die("out of memory"); }
+  layers[0] = background;
   strncpy(layers[0]->name, "Background", sizeof layers[0]->name - 1);
   layers[0]->name[sizeof layers[0]->name - 1] = '\0';
   nlayers = 1;
-  ff_free(img);
 
   if (path)
     snprintf(filepath, sizeof filepath, "%s", path);
@@ -3431,6 +3547,8 @@ stb_load_as_ff(const char *path)
 static int
 load_file(const char *path)
 {
+  uint64_t started = perf_is_enabled() ? SDL_GetPerformanceCounter() : 0;
+  uint64_t decoded;
   busy_file_hint();
   FFImage *img;
   WMDDocument doc;
@@ -3444,7 +3562,12 @@ load_file(const char *path)
   if (!img) img = fp_load(path);
   if (!img) img = stb_load_as_ff(path);
   if (!img) return 0;
-  load_img(img, path);
+  decoded = perf_is_enabled() ? SDL_GetPerformanceCounter() : 0;
+  {
+    uint32_t w = img->w, h = img->h;
+    load_img(img, path);
+    if (started) perf_log_load(path, w, h, started, decoded);
+  }
   return 1;
 }
 
@@ -3455,6 +3578,8 @@ load_file(const char *path)
 static int
 load_file_as_layer(const char *path)
 {
+  uint64_t started = perf_is_enabled() ? SDL_GetPerformanceCounter() : 0;
+  uint64_t decoded;
   busy_file_hint();
   FFImage *img;
   Layer   *nl;
@@ -3465,21 +3590,22 @@ load_file_as_layer(const char *path)
   if (!img) img = fp_load(path);
   if (!img) img = stb_load_as_ff(path);
   if (!img) return 0;
+  decoded = perf_is_enabled() ? SDL_GetPerformanceCounter() : 0;
 
   /* fresh canvas → just replace */
   if (!modified && !filepath[0] && nlayers <= 1) {
+    uint32_t w = img->w, h = img->h;
     load_img(img, path);
+    if (started) perf_log_load(path, w, h, started, decoded);
     return 1;
   }
 
   if (nlayers >= MAX_LAYERS || !canvas) { ff_free(img); return 0; }
 
-  nl = layer_new(img->w, img->h);
+  nl = layer_take_image(img);
   if (!nl) { ff_free(img); return 0; }
-  memcpy(nl->px, img->px, (size_t)img->w * img->h * 4 * sizeof(uint16_t));
   base = strrchr(path, '/');
   snprintf(nl->name, sizeof nl->name, "%.31s", base ? base + 1 : path);
-  ff_free(img);
 
   pos = active_layer + 1;
   for (i = nlayers; i > pos; i--) layers[i] = layers[i-1];
@@ -3497,15 +3623,22 @@ load_file_as_layer(const char *path)
 
   modified = 1;
   canvas_composite();
+  if (started) perf_log_load(path, nl->w, nl->h, started, decoded);
   return 1;
 }
 
 static int
 load_stdin(void)
 {
+  uint64_t started = perf_is_enabled() ? SDL_GetPerformanceCounter() : 0;
   FFImage *img = ff_load_fp(stdin);
   if (!img) return 0;
-  load_img(img, NULL);
+  {
+    uint32_t w = img->w, h = img->h;
+    load_img(img, NULL);
+    if (started) perf_log_load(NULL, w, h, started,
+                               SDL_GetPerformanceCounter());
+  }
   return 1;
 }
 
@@ -6253,6 +6386,7 @@ main(int argc, char *argv[])
 
   for (;;) {
     SDL_Event  evt;
+    uint64_t frame_started;
     char       title[4096 + 16];
     int cp_w, cp_h;          /* canvas panel pixel dimensions */
     int img_x, img_y;        /* canvas image top-left on screen */
@@ -6260,6 +6394,7 @@ main(int argc, char *argv[])
     int cursor_in_canvas = 0;
     int cursor_ix = 0, cursor_iy = 0;
 
+    perf_frame_begin(&frame_started);
     busy_begin();
 
     /* --- gather input --- */
@@ -7310,6 +7445,7 @@ main(int argc, char *argv[])
     WMD_NK_RENDER(NK_ANTI_ALIASING_ON);
 
     busy_frame_present();
+    perf_frame_end(frame_started);
 #if SLOWPOKE_MODE
     SDL_Delay(SLOWPOKE_MS); /* vsync unreliable on this hw; yield to OS */
 #endif
